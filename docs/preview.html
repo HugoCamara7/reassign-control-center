@@ -1,0 +1,913 @@
+<title>Reassign Control Center</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Chrome de la presentacion. Se adapta al tema del lector.
+   Las "capturas" mas abajo llevan los colores fijos de la app: son fotos de
+   una interfaz, no cambian con el tema de quien las mira.
+--------------------------------------------------------------------------- */
+:root {
+  --ground: #EEF2F8;
+  --panel: #FFFFFF;
+  --ink: #12203D;
+  --muted: #5B6B87;
+  --rule: #D3DEEE;
+  --accent: #2367FF;
+  --shadow: 0 26px 60px rgba(11, 27, 70, .14);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0B1424;
+    --panel: #101C31;
+    --ink: #E8EEF9;
+    --muted: #8CA0C0;
+    --rule: #1E2E4A;
+    --accent: #5B8CFF;
+    --shadow: 0 26px 60px rgba(0, 0, 0, .5);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0B1424;
+  --panel: #101C31;
+  --ink: #E8EEF9;
+  --muted: #8CA0C0;
+  --rule: #1E2E4A;
+  --accent: #5B8CFF;
+  --shadow: 0 26px 60px rgba(0, 0, 0, .5);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 56px 24px 88px;
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
+}
+
+/* ---------- encabezado ---------- */
+.masthead { display: flex; flex-direction: column; gap: 14px; }
+.masthead .eyebrow {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.masthead h1 {
+  margin: 0;
+  font-size: clamp(30px, 4.4vw, 46px);
+  font-weight: 900;
+  letter-spacing: -.03em;
+  line-height: 1.06;
+  text-wrap: balance;
+}
+.masthead p {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 16.5px;
+  color: var(--muted);
+}
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.facts span {
+  padding: 6px 13px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--panel);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* ---------- placa de pantalla ---------- */
+.plate { display: flex; flex-direction: column; gap: 16px; }
+.plate-head {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  align-items: baseline;
+  gap: 14px;
+}
+.plate-head b {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.plate-head h2 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 850;
+  letter-spacing: -.015em;
+}
+.plate-head p {
+  grid-column: 2;
+  margin: 4px 0 0;
+  max-width: 68ch;
+  font-size: 14.5px;
+  color: var(--muted);
+}
+
+.shot {
+  position: relative;
+  /* Si el script de escalado no corre, la captura se desplaza en su propio
+     contenedor en vez de quedar recortada. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  background: #152238;
+}
+.shot > .canvas {
+  width: 1280px;
+  transform: scale(var(--k, 1));
+  transform-origin: top left;
+}
+
+/* =========================================================================
+   Desde aqui: colores fijos de la aplicacion (ui/theme.py)
+   ========================================================================= */
+.canvas { font-family: "Inter", "Segoe UI", system-ui, sans-serif; color: #0B1B46; }
+
+/* ---------- pantalla de acceso ---------- */
+.login-screen {
+  background: #152238;
+  padding: 44px 0 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.login-card {
+  width: 448px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #FFFFFF;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, .32);
+}
+.login-head {
+  padding: 32px 32px 34px;
+  text-align: center;
+  background: linear-gradient(180deg, #2367FF 0%, #1757EF 100%);
+  color: #FFFFFF;
+}
+.login-logo-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  margin-bottom: 24px;
+}
+.login-forus-logo {
+  min-width: 178px;
+  height: 64px;
+  border-radius: 10px;
+  background: #FFFFFF;
+  display: grid;
+  place-items: center;
+  padding: 8px 14px;
+}
+.login-forus-fallback {
+  color: #14306B;
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 900;
+}
+.login-forus-fallback small {
+  display: block;
+  margin-top: 3px;
+  font-size: 8px;
+  letter-spacing: .22em;
+  font-weight: 800;
+}
+.login-divider { width: 1px; height: 48px; background: rgba(255, 255, 255, .62); }
+.login-side-logo {
+  width: 52px;
+  height: 52px;
+  border-radius: 10px;
+  background: #FFFFFF;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, .14);
+}
+.login-side-logo svg { width: 30px; height: 30px; display: block; }
+.login-head h3 { margin: 0; font-size: 30px; line-height: 1.12; font-weight: 900; }
+.login-head p { margin: 10px 0 0; color: #EAF2FF; font-size: 16px; font-weight: 700; }
+
+.login-form { padding: 24px 32px 8px; }
+.login-form label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #1E293B;
+}
+.login-input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  margin-bottom: 18px;
+  padding: 0 14px;
+  border: 1px solid #CBD5E1;
+  border-radius: 12px;
+  background: #F8FAFC;
+  font-size: 15px;
+  color: #64748B;
+}
+.login-input svg { width: 18px; height: 18px; stroke: #475569; fill: none; stroke-width: 1.7; }
+.login-submit {
+  width: 100%;
+  height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: #2367FF;
+  color: #FFFFFF;
+  font-size: 15px;
+  font-weight: 900;
+  font-family: inherit;
+}
+.login-note {
+  padding: 22px 32px 30px;
+  text-align: center;
+  color: #64748B;
+  font-size: 13px;
+  font-weight: 700;
+}
+.login-foot {
+  margin-top: 26px;
+  width: 448px;
+  text-align: center;
+  color: #FFFFFF;
+  font-size: 14px;
+  line-height: 1.7;
+  font-weight: 700;
+}
+.login-foot strong { display: block; margin-bottom: 6px; font-weight: 800; }
+.login-foot span { color: #93C5FD; }
+
+/* ---------- pantalla principal ---------- */
+.app-screen { display: grid; grid-template-columns: 340px 1fr; background: #F5F8FD; }
+
+.side {
+  padding: 18px 16px 24px;
+  background: #F3F6FB;
+  border-right: 1px solid #DDE6F2;
+}
+.side-brand {
+  padding: 18px 16px;
+  margin-bottom: 18px;
+  border: 1px solid #DDE6F2;
+  border-radius: 20px;
+  background: linear-gradient(160deg, #FFFFFF 0%, #F7FAFF 100%);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, .07);
+  text-align: center;
+}
+.side-brand .mark { color: #17269A; font-size: 30px; font-weight: 900; line-height: 1; letter-spacing: -.05em; }
+.side-brand .mark small { display: block; margin-top: 4px; font-size: 8px; letter-spacing: .22em; font-weight: 800; }
+.side-brand .app {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #DDE6F2;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+.side-brand .app span { display: block; margin-top: 3px; font-size: 11px; font-weight: 700; color: #64748B; }
+
+.side-label {
+  margin: 18px 0 8px;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #0B1B46;
+}
+.steps { display: flex; flex-direction: column; gap: 6px; }
+.step {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #55637A;
+}
+.step i {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  background: #E7EDF7;
+  color: #64748B;
+  font-style: normal;
+  font-size: 12.5px;
+  font-weight: 900;
+}
+.step.done { color: #15803D; }
+.step.done i { background: #ECFDF5; color: #16A34A; }
+.step.active {
+  background: #EFF6FF;
+  border-color: #BFDBFE;
+  color: #0B1B46;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, .10);
+}
+.step.active i { background: #2367FF; color: #FFFFFF; }
+
+.side-card {
+  padding: 14px 15px;
+  margin-bottom: 12px;
+  border: 1px solid #DDE6F2;
+  border-radius: 16px;
+  background: #FFFFFF;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, .05);
+}
+.side-card p { margin: 0 0 6px; font-size: 13px; font-weight: 750; line-height: 1.4; color: #172554; }
+.side-card p:last-child { margin-bottom: 0; }
+.side-card b { color: #0B1B46; font-weight: 850; }
+
+.side-drop {
+  padding: 16px 14px;
+  border: 1.5px dashed #A9C2EA;
+  border-radius: 18px;
+  background: #FBFDFF;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #5B6B87;
+  text-align: center;
+}
+.side-btn {
+  margin-top: 10px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #DDE6F2;
+  border-radius: 12px;
+  background: #FFFFFF;
+  font-size: 13.5px;
+  font-weight: 900;
+  color: #0B1B46;
+}
+.side-radio { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.side-radio div { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 750; color: #172554; }
+.side-radio i {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #94A3B8;
+  display: block;
+}
+.side-radio i.on { border-color: #2367FF; background: radial-gradient(circle, #2367FF 0 4px, #FFFFFF 4.5px); }
+
+.main { padding: 22px 30px 34px; }
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 24px;
+  padding: 26px 30px;
+  margin-bottom: 20px;
+  background: linear-gradient(125deg, #14306B 0%, #1757EF 55%, #3B82F6 100%);
+  color: #FFFFFF;
+  box-shadow: 0 22px 46px rgba(19, 48, 107, .26);
+}
+.hero::after {
+  content: "";
+  position: absolute;
+  right: -70px;
+  top: -90px;
+  width: 260px;
+  height: 260px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .10);
+}
+.hero .eyebrow {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: #BFDBFE;
+}
+.hero h3 { margin: 0; font-size: 31px; line-height: 1.1; font-weight: 900; }
+.hero p { margin: 10px 0 0; max-width: 720px; font-size: 15px; font-weight: 650; color: #E4EEFF; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; position: relative; z-index: 1; }
+.chips span {
+  padding: 6px 13px;
+  border: 1px solid rgba(255, 255, 255, .26);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .16);
+  font-size: 12px;
+  font-weight: 800;
+}
+.chips span.ok { background: rgba(22, 163, 74, .28); border-color: rgba(134, 239, 172, .55); }
+.chips span.warn { background: rgba(217, 119, 6, .30); border-color: rgba(253, 224, 71, .55); }
+
+.section { margin: 24px 0 12px; }
+.section p {
+  margin: 0 0 4px;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: #2367FF;
+}
+.section h4 { margin: 0; font-size: 21px; font-weight: 900; }
+.section small { display: block; margin-top: 5px; font-size: 13.5px; font-weight: 650; color: #3F5578; }
+
+.kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 13px; margin: 4px 0 22px; }
+.kpi {
+  position: relative;
+  overflow: hidden;
+  padding: 16px 17px 15px;
+  border: 1px solid #DDE6F2;
+  border-radius: 18px;
+  background: #FFFFFF;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, .07);
+}
+.kpi::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: #2367FF; }
+.kpi.ok::before { background: #16A34A; }
+.kpi.warn::before { background: #D97706; }
+.kpi.bad::before { background: #DC2626; }
+.kpi.neutral::before { background: #94A3B8; }
+.kpi span {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: #64748B;
+  line-height: 1.25;
+}
+.kpi strong {
+  display: block;
+  margin-top: 9px;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.kpi em { display: block; margin-top: 7px; font-size: 12px; font-style: normal; font-weight: 700; color: #7C8AA3; }
+
+.note {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 13px 15px;
+  margin-bottom: 10px;
+  border-radius: 14px;
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+.note i { font-style: normal; font-size: 15px; line-height: 1.3; }
+.note b { font-weight: 900; }
+.note.info { background: #EFF6FF; border: 1px solid #BFDBFE; color: #0B3E82; }
+.note.ok { background: #ECFDF5; border: 1px solid #BBF7D0; color: #06603F; }
+.note.warn { background: #FFFBEB; border: 1px solid #FDE68A; color: #92400E; }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid #DDE6F2; margin: 18px 0 0; }
+.tabs div { padding: 9px 16px; border-radius: 11px 11px 0 0; font-size: 14px; font-weight: 900; color: #64748B; }
+.tabs div.on { background: #EFF6FF; color: #2367FF; }
+
+.grid-table {
+  border: 1px solid #DDE6F2;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #FFFFFF;
+  margin-top: 14px;
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  padding: 11px 14px;
+  text-align: left;
+  background: #F7FAFF;
+  border-bottom: 1px solid #DDE6F2;
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #5B6B87;
+  white-space: nowrap;
+}
+tbody td { padding: 10px 14px; border-bottom: 1px solid #EEF3FA; font-weight: 650; color: #1E293B; }
+tbody tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; }
+.tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.tag.ok { background: #ECFDF5; color: #06603F; border: 1px solid #BBF7D0; }
+.tag.bad { background: #FEF2F2; color: #991B1B; border: 1px solid #FECACA; }
+.dim { color: #94A3B8; font-weight: 650; }
+
+.dl { display: flex; gap: 12px; margin-top: 16px; }
+.dl div {
+  flex: 1;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 900;
+}
+.dl .primary { background: #2367FF; color: #FFFFFF; }
+.dl .secondary { background: #FFFFFF; border: 1px solid #DDE6F2; color: #0B1B46; }
+
+/* ---------- pie de placa ---------- */
+.caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+  padding-left: 54px;
+}
+.caption div { font-size: 13px; color: var(--muted); }
+.caption b { color: var(--ink); font-weight: 750; }
+code {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-family: "Cascadia Mono", "SF Mono", Consolas, monospace;
+  font-size: .92em;
+  color: var(--ink);
+}
+
+.footnote {
+  padding: 18px 20px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  background: var(--panel);
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.footnote b { color: var(--ink); }
+
+@media (max-width: 700px) {
+  .wrap { padding: 36px 16px 64px; gap: 40px; }
+  .caption { padding-left: 0; }
+  .plate-head { grid-template-columns: 30px 1fr; gap: 10px; }
+  .plate-head p { grid-column: 1 / -1; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Forus Peru &middot; Operaciones ecommerce</p>
+    <h1>Reassign Control Center</h1>
+    <p>Las pantallas de la aplicacion que reasigna pedidos sin stock a la tienda de mayor
+       prioridad que pueda despacharlos. Mismo lenguaje visual que Catalogo Control Center,
+       con la barra lateral fija de forma permanente.</p>
+    <div class="facts">
+      <span>Streamlit</span>
+      <span>BigQuery solo lectura</span>
+      <span>Prioridad configurable en Excel</span>
+      <span>Sin FastAPI</span>
+    </div>
+  </header>
+
+  <!-- 01 ------------------------------------------------------------------->
+  <section class="plate">
+    <div class="plate-head">
+      <b>01</b>
+      <h2>Acceso</h2>
+      <p>Fondo oscuro, tarjeta blanca y cabecera azul, igual que el resto de las
+         herramientas internas. La barra lateral no existe todavia: aparece recien
+         con la sesion iniciada.</p>
+    </div>
+
+    <div class="shot">
+      <div class="canvas">
+        <div class="login-screen">
+          <div class="login-card">
+            <div class="login-head">
+              <div class="login-logo-row">
+                <div class="login-forus-logo">
+                  <div class="login-forus-fallback">FORUS<small>CONSUMER FANATIC</small></div>
+                </div>
+                <div class="login-divider"></div>
+                <div class="login-side-logo">
+                  <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <defs>
+                      <linearGradient id="d1" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="#4285F4"></stop>
+                        <stop offset="100%" stop-color="#1757EF"></stop>
+                      </linearGradient>
+                    </defs>
+                    <ellipse cx="16" cy="7.4" rx="10.5" ry="4.1" fill="url(#d1)"></ellipse>
+                    <path d="M5.5 7.4v7.2c0 2.27 4.7 4.1 10.5 4.1s10.5-1.83 10.5-4.1V7.4"
+                          fill="none" stroke="url(#d1)" stroke-width="2.7" stroke-linecap="round"></path>
+                    <path d="M5.5 14.6v7.2c0 2.27 4.7 4.1 10.5 4.1s10.5-1.83 10.5-4.1v-7.2"
+                          fill="none" stroke="url(#d1)" stroke-width="2.7" stroke-linecap="round" opacity=".62"></path>
+                  </svg>
+                </div>
+              </div>
+              <h3>Reassign Control Center</h3>
+              <p>Reasignacion automatica de pedidos sin stock</p>
+            </div>
+
+            <div class="login-form">
+              <label>Correo electronico</label>
+              <div class="login-input"><span>nombre.apellido@forus.pe</span></div>
+              <label>Contrasena</label>
+              <div class="login-input">
+                <span>&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M1.5 12S5 5.5 12 5.5 22.5 12 22.5 12 19 18.5 12 18.5 1.5 12 1.5 12Z"></path>
+                  <circle cx="12" cy="12" r="3.2"></circle>
+                </svg>
+              </div>
+              <button class="login-submit" type="button">Ingresar</button>
+            </div>
+
+            <div class="login-note">Sistema exclusivo para personal autorizado</div>
+          </div>
+
+          <div class="login-foot">
+            <strong>Reasignacion de pedidos para multiples marcas</strong>
+            <span>Columbia &bull; Hush Puppies &bull; Vans &bull; Rockford &bull; Parfois &bull; Mas</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="caption">
+      <div><b>Se activa</b> con la seccion <code>[app_auth]</code> en secrets.toml</div>
+      <div><b>Sin esa seccion</b> la app queda abierta, para no bloquear un despliegue nuevo</div>
+    </div>
+  </section>
+
+  <!-- 02 ------------------------------------------------------------------->
+  <section class="plate">
+    <div class="plate-head">
+      <b>02</b>
+      <h2>Validacion</h2>
+      <p>Antes de tocar BigQuery, la app revisa el archivo y expone lo que encontro.
+         Los hallazgos de la captura son los reales del formato de carga de julio:
+         402 filas, 58 columnas.</p>
+    </div>
+
+    <div class="shot">
+      <div class="canvas">
+        <div class="app-screen">
+          <aside class="side">
+            <div class="side-brand">
+              <div class="mark">FORUS<small>CONSUMER FANATIC</small></div>
+              <div class="app">Reassign Control Center<span>Reasignacion automatica de pedidos sin stock</span></div>
+            </div>
+
+            <p class="side-label">Flujo</p>
+            <div class="steps">
+              <div class="step done"><i>&#10003;</i><span>Subir archivo</span></div>
+              <div class="step active"><i>2</i><span>Validar</span></div>
+              <div class="step"><i>3</i><span>Consultar stock</span></div>
+              <div class="step"><i>4</i><span>Reasignar</span></div>
+              <div class="step"><i>5</i><span>Revisar</span></div>
+              <div class="step"><i>6</i><span>Descargar</span></div>
+            </div>
+
+            <p class="side-label">Prioridad de tiendas</p>
+            <div class="side-drop">Arrastra prioridad_tiendas.xlsx<br><span class="dim">200MB por archivo &bull; XLSX</span></div>
+            <div class="side-btn">Descargar plantilla</div>
+
+            <p class="side-label">Configuracion activa</p>
+            <div class="side-card">
+              <p>Origen: <b>prioridad_tiendas.xlsx</b></p>
+              <p>Tiendas: <b>64</b> &nbsp;|&nbsp; Sitios: <b>8</b></p>
+              <p>Estados: <b>SIN_STOCK, SIN_DESPACHO</b></p>
+              <p>Excluir tienda origen: <b>SI</b></p>
+            </div>
+          </aside>
+
+          <main class="main">
+            <div class="hero">
+              <p class="eyebrow">Forus Peru &bull; Operaciones ecommerce</p>
+              <h3>Reasignacion de pedidos sin stock</h3>
+              <p>Sube el archivo de pedidos, la app identifica los estados SIN_STOCK y
+                 SIN_DESPACHO, consulta el stock disponible y reasigna cada pedido a la
+                 tienda de mayor prioridad que pueda despacharlo.</p>
+              <div class="chips">
+                <span>Paso 2 de 6</span>
+                <span class="ok">BigQuery conectado</span>
+                <span class="ok">64 tiendas en prioridad</span>
+                <span class="ok">Solo lectura de stock</span>
+              </div>
+            </div>
+
+            <div class="section">
+              <p>Paso 2</p>
+              <h4>Validar estructura y reglas</h4>
+              <small>Formato de Carga Reasignacion.xls &bull; hoja 'shipping_groups_1783611991147' &bull; 402 filas &bull; 58 columnas.</small>
+            </div>
+
+            <div class="kpis">
+              <div class="kpi neutral"><span>Filas leidas</span><strong>402</strong><em>58 columnas</em></div>
+              <div class="kpi"><span>Pedidos a reasignar</span><strong>396</strong><em>SIN_STOCK, SIN_DESPACHO</em></div>
+              <div class="kpi"><span>Estados distintos</span><strong>3</strong><em>Ver detalle abajo</em></div>
+              <div class="kpi warn"><span>Alertas</span><strong>2</strong><em>Revisar antes de continuar</em></div>
+              <div class="kpi bad"><span>Errores</span><strong>0</strong><em>Bloquean el proceso</em></div>
+            </div>
+
+            <div class="note warn">
+              <i>&#9888;</i>
+              <div><b>Pedidos sin tienda de origen (378 filas)</b><br>
+                378 de 396 filas no traen 'Nom_Tienda_Asig' ni 'Cod_Tienda_Asig'. En esas filas
+                no se puede aplicar la regla de excluir la tienda origen.</div>
+            </div>
+            <div class="note warn">
+              <i>&#9888;</i>
+              <div><b>ShGroup con IDs de mas de 15 digitos (245 filas)</b><br>
+                Excel los guarda como numero de coma flotante, asi que los ultimos digitos pueden
+                no ser exactos ya en el archivo de origen. La app los escribe como texto para no
+                empeorarlo.</div>
+            </div>
+            <div class="note info">
+              <i>&#8505;</i>
+              <div><b>SKU repetidos entre pedidos (142 filas)</b><br>
+                59 SKU aparecen en mas de un pedido (maximo 5 veces). El motor descuenta el stock
+                a medida que reasigna para no comprometerlo dos veces.</div>
+            </div>
+            <div class="note info">
+              <i>&#8505;</i>
+              <div><b>Encabezados con codificacion danada (5 filas)</b><br>
+                Se conservan tal cual para no romper la carga en la plataforma destino:
+                N_Tracking_Env&Atilde;&shy;o, &Acirc;&iquest;Quien_Recibe?...</div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <div class="caption">
+      <div><b>Tres niveles:</b> error bloquea, alerta deja seguir, info es contexto</div>
+      <div><b>Barra lateral fija</b> en 340&nbsp;px, sin boton de colapso ni handle de resize</div>
+    </div>
+  </section>
+
+  <!-- 03 ------------------------------------------------------------------->
+  <section class="plate">
+    <div class="plate-head">
+      <b>03</b>
+      <h2>Resultado y descarga</h2>
+      <p>KPIs de la corrida, vista previa pedido por pedido y los dos archivos de salida.
+         Las cifras vienen de la prueba end-to-end sobre el archivo real con stock
+         sintetico, no de una consulta a produccion.</p>
+    </div>
+
+    <div class="shot">
+      <div class="canvas">
+        <div class="app-screen">
+          <aside class="side">
+            <div class="side-brand">
+              <div class="mark">FORUS<small>CONSUMER FANATIC</small></div>
+              <div class="app">Reassign Control Center<span>Reasignacion automatica de pedidos sin stock</span></div>
+            </div>
+
+            <p class="side-label">Flujo</p>
+            <div class="steps">
+              <div class="step done"><i>&#10003;</i><span>Subir archivo</span></div>
+              <div class="step done"><i>&#10003;</i><span>Validar</span></div>
+              <div class="step done"><i>&#10003;</i><span>Consultar stock</span></div>
+              <div class="step done"><i>&#10003;</i><span>Reasignar</span></div>
+              <div class="step active"><i>5</i><span>Revisar</span></div>
+              <div class="step"><i>6</i><span>Descargar</span></div>
+            </div>
+
+            <p class="side-label">Fuente de stock</p>
+            <div class="side-radio">
+              <div><i class="on"></i><span>BigQuery (solo lectura)</span></div>
+              <div><i></i><span>Archivo de stock</span></div>
+            </div>
+            <div class="side-card">
+              <p>Estado: <b>configurado</b></p>
+              <p>Tabla: <b>stg_pe_central_stock_bi</b></p>
+              <p>Modo: <b>solo lectura</b></p>
+            </div>
+            <div class="side-btn">Reiniciar proceso</div>
+          </aside>
+
+          <main class="main">
+            <div class="section" style="margin-top:0">
+              <p>Paso 5</p>
+              <h4>Revisar resultado</h4>
+              <small>KPIs de la corrida y detalle pedido por pedido.</small>
+            </div>
+
+            <div class="kpis">
+              <div class="kpi neutral"><span>Pedidos recibidos</span><strong>402</strong><em>340 ordenes unicas</em></div>
+              <div class="kpi"><span>Pedidos a reasignar</span><strong>396</strong><em>399 unidades</em></div>
+              <div class="kpi ok"><span>Reasignados</span><strong>309</strong><em>Cobertura total</em></div>
+              <div class="kpi warn"><span>Sin stock disponible</span><strong>87</strong><em>Tasa de exito 78%</em></div>
+              <div class="kpi bad"><span>Errores</span><strong>0</strong><em>Filas sin SKU o ilegibles</em></div>
+            </div>
+
+            <div class="note warn">
+              <i>&#9888;</i>
+              <div><b>87 pedidos quedaron como 'SIN OPCION DE REASIGNACION'</b><br>
+                Revisa la pestana 'Sin opcion' para ver el motivo exacto de cada uno.</div>
+            </div>
+
+            <div class="tabs">
+              <div class="on">Vista previa</div>
+              <div>Reasignados</div>
+              <div>Sin opcion</div>
+              <div>Por tienda</div>
+              <div>Validacion</div>
+            </div>
+
+            <div class="grid-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pedido</th><th>SKU</th><th>Tienda origen</th><th>Unidades</th>
+                    <th>Tienda reasignada</th><th>Stock disponible</th><th>Resultado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>vns84682-01</td><td class="num">5418147</td><td class="dim">(sin dato)</td><td class="num">1</td><td>VANS PIURA</td><td class="num">2</td><td><span class="tag ok">REASIGNADO</span></td></tr>
+                  <tr><td>sml553847-01</td><td class="num">4273782</td><td class="dim">(sin dato)</td><td class="num">1</td><td>CLB CUSCO PLAZA</td><td class="num">2</td><td><span class="tag ok">REASIGNADO</span></td></tr>
+                  <tr><td>hpp824206-01</td><td class="num">5360780</td><td class="dim">(sin dato)</td><td class="num">1</td><td class="dim">&mdash;</td><td class="num">0</td><td><span class="tag bad">SIN OPCION DE REASIGNACION</span></td></tr>
+                  <tr><td>rkf611195-01</td><td class="num">5144229</td><td class="dim">(sin dato)</td><td class="num">1</td><td>CLB MALL DEL SUR</td><td class="num">2</td><td><span class="tag ok">REASIGNADO</span></td></tr>
+                  <tr><td>clb963318-01</td><td class="num">5261557</td><td class="dim">(sin dato)</td><td class="num">1</td><td>CLB PLAZA NORTE</td><td class="num">2</td><td><span class="tag ok">REASIGNADO</span></td></tr>
+                  <tr><td>clb963318-01</td><td class="num">5229788</td><td class="dim">(sin dato)</td><td class="num">1</td><td>BODEGA FORUS 320</td><td class="num">2</td><td><span class="tag ok">REASIGNADO</span></td></tr>
+                  <tr><td>vns84796-01</td><td class="num">5237018</td><td>VNS Salaverry</td><td class="num">2</td><td>VANS JOCKEY PLAZA</td><td class="num">2</td><td><span class="tag ok">REASIGNADO</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="section">
+              <p>Paso 6</p>
+              <h4>Descargar Excel final</h4>
+              <small>Mantiene las 58 columnas originales y escribe la tienda en 'Nom Tda Reasignada'.</small>
+            </div>
+            <div class="dl">
+              <div class="primary">Descargar Excel de carga</div>
+              <div class="secondary">Descargar reporte operativo</div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <div class="caption">
+      <div><b>Excel de carga:</b> el que se sube a la plataforma destino</div>
+      <div><b>Reporte operativo:</b> KPIs, detalle, uso por tienda, validaciones</div>
+    </div>
+  </section>
+
+  <p class="footnote">
+    <b>Capturas reales.</b> En <code>capturas/</code> estan los PNG tomados de la aplicacion
+    en ejecucion, ya con el logotipo institucional (<code>assets/forus.png</code>, recuperado del
+    paquete de Catalogo Control Center). Esta pagina reproduce las mismas pantallas en HTML para
+    poder verlas a cualquier ancho.
+  </p>
+
+</div>
+
+<script>
+  // Cada "captura" se dibuja a 1280 px y se escala para caber en el ancho real.
+  function fit() {
+    document.querySelectorAll('.shot').forEach(function (shot) {
+      var canvas = shot.querySelector('.canvas');
+      // Si el contenedor aun no tiene ancho (primer frame, panel oculto), se
+      // deja la escala 1:1 en vez de colapsar la captura a cero.
+      var available = shot.clientWidth || 0;
+      var k = available > 0 ? Math.min(1, available / 1280) : 1;
+      canvas.style.setProperty('--k', k);
+      shot.style.height = Math.round(canvas.offsetHeight * k) + 'px';
+    });
+  }
+
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  if (window.ResizeObserver) {
+    var observer = new ResizeObserver(fit);
+    document.querySelectorAll('.shot').forEach(function (shot) { observer.observe(shot); });
+  }
+  fit();
+</script>
