@@ -1,0 +1,15 @@
+[server]
+maxUploadSize = 200
+
+[theme]
+base = "light"
+primaryColor = "#2367FF"
+backgroundColor = "#F5F8FD"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0B1B46"
+
+[client]
+toolbarMode = "minimal"
+# OJO: no activar client.showSidebarNavigation = false.
+# En Streamlit 1.60 esa opcion elimina la barra lateral completa en apps
+# de una sola pagina, y esta app la necesita siempre visible.
