@@ -1,0 +1,443 @@
+"""Motor de reasignacion.
+
+Reglas implementadas, en el orden en que se aplican a cada pedido:
+
+1. Solo se procesan las filas cuyo `Estado` esta en `estados_objetivo`.
+2. Se recorre la lista de prioridad del sitio/marca del pedido, de menor a
+   mayor `prioridad`.
+3. Se descarta la tienda de origen del propio pedido (`excluir_tienda_origen`).
+4. Se descarta cualquier tienda cuyo stock disponible, ya descontado el
+   stock de seguridad y lo comprometido en esta misma corrida, no alcance
+   para las unidades solicitadas.
+5. La primera tienda que cumple gana; su stock se descuenta en memoria de
+   inmediato, para que el mismo par (SKU, tienda) no se comprometa dos veces.
+6. Si ninguna tienda cumple, la fila queda como `SIN OPCION DE REASIGNACION`.
+
+El descuento es **siempre en memoria**. BigQuery no se modifica nunca.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+from config import settings
+from core.excel_io import (
+    as_text,
+    normalize_sku,
+    normalize_status,
+    normalize_store_code,
+    normalize_store_name,
+    to_units,
+)
+from core.priority import PriorityConfig, StoreRule
+
+RESULT_PARTIAL = "REASIGNADO PARCIAL"
+
+PREVIEW_COLUMNS = [
+    "Pedido",
+    "SKU",
+    "Tienda origen",
+    "Unidades",
+    "Tienda reasignada",
+    "Stock disponible",
+    "Resultado",
+]
+
+
+@dataclass
+class KPIs:
+    pedidos_recibidos: int = 0
+    pedidos_a_reasignar: int = 0
+    reasignados: int = 0
+    reasignados_parciales: int = 0
+    sin_stock: int = 0
+    errores: int = 0
+    unidades_solicitadas: int = 0
+    unidades_reasignadas: int = 0
+    tiendas_usadas: int = 0
+    ordenes_unicas: int = 0
+    fecha_corte: str = ""
+
+    @property
+    def tasa_exito(self) -> float:
+        if not self.pedidos_a_reasignar:
+            return 0.0
+        return 100.0 * (self.reasignados + self.reasignados_parciales) / self.pedidos_a_reasignar
+
+    def to_frame(self) -> pd.DataFrame:
+        # `object` a proposito: si no, la tasa de exito (float) convierte
+        # todos los conteos en 402.0 en lugar de 402.
+        return pd.DataFrame(
+            [
+                {"Indicador": "Pedidos recibidos", "Valor": self.pedidos_recibidos},
+                {"Indicador": "Pedidos a reasignar", "Valor": self.pedidos_a_reasignar},
+                {"Indicador": "Reasignados", "Valor": self.reasignados},
+                {"Indicador": "Reasignados parciales", "Valor": self.reasignados_parciales},
+                {"Indicador": "Sin stock disponible", "Valor": self.sin_stock},
+                {"Indicador": "Errores", "Valor": self.errores},
+                {"Indicador": "Unidades solicitadas", "Valor": self.unidades_solicitadas},
+                {"Indicador": "Unidades reasignadas", "Valor": self.unidades_reasignadas},
+                {"Indicador": "Tiendas utilizadas", "Valor": self.tiendas_usadas},
+                {"Indicador": "Ordenes unicas", "Valor": self.ordenes_unicas},
+                {"Indicador": "Tasa de exito (%)", "Valor": round(self.tasa_exito, 1)},
+                {"Indicador": "Fecha de corte del stock", "Valor": self.fecha_corte or "-"},
+            ],
+            dtype=object,
+        )
+
+
+@dataclass
+class ReassignmentResult:
+    output_df: pd.DataFrame
+    output_headers: list[str]
+    preview: pd.DataFrame
+    detail: pd.DataFrame
+    kpis: KPIs = field(default_factory=KPIs)
+    store_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
+    output_column: str = settings.COL_REASSIGNED
+
+
+class _Ledger:
+    """Stock disponible en memoria, con descuento temporal por corrida."""
+
+    def __init__(self, stock_index: dict[tuple[str, str], int]) -> None:
+        self._initial = dict(stock_index)
+        self._used: dict[tuple[str, str], int] = defaultdict(int)
+        self._by_store: dict[str, int] = defaultdict(int)
+
+    def initial(self, sku: str, store: str) -> int:
+        return self._initial.get((sku, store), 0)
+
+    def available(self, sku: str, store: str, safety: int = 0) -> int:
+        base = self._initial.get((sku, store), 0) - safety
+        return max(0, base - self._used[(sku, store)])
+
+    def store_used(self, store: str) -> int:
+        return self._by_store[store]
+
+    def take(self, sku: str, store: str, units: int) -> None:
+        self._used[(sku, store)] += units
+        self._by_store[store] += units
+
+    def snapshot(self) -> pd.DataFrame:
+        rows = [
+            {
+                "cod_tienda": store,
+                "unidades_reasignadas": used,
+            }
+            for store, used in sorted(self._by_store.items(), key=lambda item: -item[1])
+            if used
+        ]
+        return pd.DataFrame(rows)
+
+
+def _origin_of(row: pd.Series, resolved: dict[str, str]) -> tuple[str, str]:
+    """Devuelve `(codigo, nombre)` de la tienda que tenia el pedido."""
+    code_col = resolved.get(settings.COL_STORE_CODE)
+    name_col = resolved.get(settings.COL_STORE_NAME)
+    code = normalize_store_code(row[code_col]) if code_col else ""
+    name = as_text(row[name_col]) if name_col else ""
+    return code, name
+
+
+def _is_origin(rule: StoreRule, origin_code: str, origin_name: str) -> bool:
+    if origin_code and rule.cod_tienda and rule.cod_tienda == origin_code:
+        return True
+    if origin_name and rule.nom_tienda:
+        return normalize_store_name(rule.nom_tienda) == normalize_store_name(origin_name)
+    return False
+
+
+def _pick_store(
+    rules: list[StoreRule],
+    sku: str,
+    units: int,
+    origin_code: str,
+    origin_name: str,
+    ledger: _Ledger,
+    exclude_origin: bool,
+    allow_partial: bool,
+) -> tuple[StoreRule | None, int, int, str]:
+    """Elige tienda destino. Devuelve `(regla, disponible, a_tomar, motivo)`."""
+    if not rules:
+        return None, 0, 0, "El sitio/marca no tiene tiendas en la lista de prioridad."
+
+    best_partial: tuple[StoreRule, int] | None = None
+    skipped_origin = False
+    seen_stock = False
+
+    for rule in rules:
+        if exclude_origin and _is_origin(rule, origin_code, origin_name):
+            skipped_origin = True
+            continue
+        if rule.max_unidades and ledger.store_used(rule.cod_tienda) >= rule.max_unidades:
+            continue
+
+        available = ledger.available(sku, rule.cod_tienda, rule.stock_seguridad)
+        if rule.max_unidades:
+            available = min(available, rule.max_unidades - ledger.store_used(rule.cod_tienda))
+        if available > 0:
+            seen_stock = True
+        if available >= units:
+            return rule, available, units, ""
+        if allow_partial and available > 0 and best_partial is None:
+            best_partial = (rule, available)
+
+    if best_partial:
+        rule, available = best_partial
+        return rule, available, available, f"Solo se cubren {available} de {units} unidades."
+
+    if not seen_stock:
+        reason = "Ninguna tienda de la lista tiene stock para este SKU."
+    else:
+        reason = f"Ninguna tienda tiene las {units} unidades requeridas."
+    if skipped_origin:
+        reason += " Se descarto la tienda de origen."
+    return None, 0, 0, reason
+
+
+def reassign(
+    df: pd.DataFrame,
+    headers: list[str],
+    resolved: dict[str, str],
+    config: PriorityConfig,
+    stock_index: dict[tuple[str, str], int],
+    stock_cutoff: str = "",
+    include_trace: bool = True,
+) -> ReassignmentResult:
+    """Ejecuta la reasignacion completa y arma el archivo de salida."""
+    output_column = config.output_column
+    exclude_origin = config.flag("excluir_tienda_origen")
+    allow_partial = config.flag("permitir_reasignacion_parcial")
+    group_by_shgroup = config.flag("agrupar_por_shgroup")
+    group_fallback = config.flag("fallback_linea_si_grupo_falla")
+    target_statuses = set(config.target_statuses)
+
+    col_status = resolved[settings.COL_STATUS]
+    col_sku = resolved[settings.COL_SKU]
+    col_units = resolved[settings.COL_UNITS]
+    col_order = resolved.get(settings.COL_ORDER)
+    col_site = resolved.get(settings.COL_SITE)
+    col_brand = resolved.get(settings.COL_BRAND)
+    col_shgroup = resolved.get(settings.COL_SHGROUP)
+
+    ledger = _Ledger(stock_index)
+    output = df.copy()
+
+    # Columnas nuevas: la de salida (si no existia) y las de trazabilidad.
+    # Se crean como `object` a proposito: pandas 3 infiere `str` en una columna
+    # inicializada con "" y luego rechaza los enteros de stock y prioridad.
+    def _blank_column() -> pd.Series:
+        return pd.Series([""] * len(output), index=output.index, dtype=object)
+
+    output_headers = list(headers)
+    if output_column not in output.columns:
+        output[output_column] = _blank_column()
+        output_headers.append(output_column)
+    else:
+        output[output_column] = output[output_column].map(as_text).astype(object)
+
+    for column in settings.TRACE_COLUMNS:
+        output[column] = _blank_column()
+        if include_trace and column not in output_headers:
+            output_headers.append(column)
+
+    kpis = KPIs(pedidos_recibidos=len(df), fecha_corte=stock_cutoff)
+    if col_order:
+        kpis.ordenes_unicas = int(df[col_order].map(as_text).replace("", pd.NA).nunique())
+
+    statuses = df[col_status].map(normalize_status)
+    target_index = list(df.index[statuses.isin(target_statuses)])
+    kpis.pedidos_a_reasignar = len(target_index)
+
+    detail_rows: list[dict] = []
+
+    # --- modo agrupado: se intenta una sola tienda por ShGroup -------------
+    group_assignment: dict[str, StoreRule] = {}
+    group_failed: set[str] = set()
+    if group_by_shgroup and col_shgroup:
+        groups: dict[str, list] = defaultdict(list)
+        for index in target_index:
+            groups[as_text(df.at[index, col_shgroup])].append(index)
+
+        for group_key, indexes in groups.items():
+            if not group_key or len(indexes) < 2:
+                continue
+            first = df.loc[indexes[0]]
+            site = as_text(first[col_site]) if col_site else ""
+            brand = as_text(first[col_brand]) if col_brand else ""
+            origin_code, origin_name = _origin_of(first, resolved)
+            rules = config.rules_for(site, brand)
+
+            needs: dict[str, int] = defaultdict(int)
+            for index in indexes:
+                sku = normalize_sku(df.at[index, col_sku])
+                if sku:
+                    needs[sku] += max(1, to_units(df.at[index, col_units]))
+
+            chosen = None
+            for rule in rules:
+                if exclude_origin and _is_origin(rule, origin_code, origin_name):
+                    continue
+                if all(
+                    ledger.available(sku, rule.cod_tienda, rule.stock_seguridad) >= units
+                    for sku, units in needs.items()
+                ):
+                    chosen = rule
+                    break
+
+            if chosen is not None:
+                for index in indexes:
+                    group_assignment[str(index)] = chosen
+            else:
+                group_failed.update(str(index) for index in indexes)
+
+    # --- recorrido principal, en el orden original del archivo -------------
+    for index in target_index:
+        row = df.loc[index]
+        sku = normalize_sku(row[col_sku])
+        units = to_units(row[col_units])
+        if units <= 0:
+            units = 1
+        kpis.unidades_solicitadas += units
+
+        order_id = as_text(row[col_order]) if col_order else ""
+        site = as_text(row[col_site]) if col_site else ""
+        brand = as_text(row[col_brand]) if col_brand else ""
+        origin_code, origin_name = _origin_of(row, resolved)
+        origin_label = origin_name or (config.store_name(origin_code) if origin_code else "")
+
+        record = {
+            "Pedido": order_id,
+            "SKU": sku,
+            "Tienda origen": origin_label or "(sin dato)",
+            "Unidades": units,
+            "Tienda reasignada": "",
+            "Stock disponible": 0,
+            "Resultado": "",
+            "Sitio": site,
+            "Marca": brand,
+            "Cod tienda reasignada": "",
+            "Prioridad": "",
+            "Stock restante": "",
+            "Detalle": "",
+        }
+
+        if not sku:
+            record["Resultado"] = settings.RESULT_ERROR
+            record["Detalle"] = "La fila no trae SKU: no se puede consultar stock."
+            kpis.errores += 1
+            output.at[index, "Reasig_Resultado"] = settings.RESULT_ERROR
+            output.at[index, "Reasig_Detalle"] = record["Detalle"]
+            detail_rows.append(record)
+            continue
+
+        key = str(index)
+        forced = group_assignment.get(key)
+
+        if forced is not None:
+            available = ledger.available(sku, forced.cod_tienda, forced.stock_seguridad)
+            rule, take, reason = forced, min(units, available), ""
+            if available < units:
+                # No deberia ocurrir, pero si el grupo se descuadra se degrada
+                # a la busqueda normal en lugar de asignar de mas.
+                rule, available, take, reason = _pick_store(
+                    config.rules_for(site, brand), sku, units, origin_code, origin_name,
+                    ledger, exclude_origin, allow_partial,
+                )
+        elif key in group_failed and not group_fallback:
+            rule, available, take, reason = (
+                None,
+                0,
+                0,
+                "Ninguna tienda cubre el despacho completo (agrupar_por_shgroup=SI).",
+            )
+        else:
+            rule, available, take, reason = _pick_store(
+                config.rules_for(site, brand), sku, units, origin_code, origin_name,
+                ledger, exclude_origin, allow_partial,
+            )
+            if key in group_failed and rule is not None:
+                reason = (reason + " ").strip() + " Despacho dividido: ninguna tienda cubria el ShGroup completo."
+
+        if rule is None:
+            record["Resultado"] = settings.RESULT_NO_OPTION
+            record["Detalle"] = reason
+            kpis.sin_stock += 1
+            output.at[index, output_column] = ""
+            output.at[index, "Reasig_Resultado"] = settings.RESULT_NO_OPTION
+            output.at[index, "Reasig_Detalle"] = reason
+            output.at[index, "Reasig_Fecha_Corte"] = stock_cutoff
+            detail_rows.append(record)
+            continue
+
+        ledger.take(sku, rule.cod_tienda, take)
+        remaining = ledger.available(sku, rule.cod_tienda, rule.stock_seguridad)
+        partial = take < units
+        result = RESULT_PARTIAL if partial else settings.RESULT_REASSIGNED
+        if partial:
+            kpis.reasignados_parciales += 1
+        else:
+            kpis.reasignados += 1
+        kpis.unidades_reasignadas += take
+
+        record.update(
+            {
+                "Tienda reasignada": rule.nom_tienda,
+                "Stock disponible": available,
+                "Resultado": result,
+                "Cod tienda reasignada": rule.cod_tienda,
+                "Prioridad": rule.prioridad,
+                "Stock restante": remaining,
+                "Detalle": reason,
+            }
+        )
+        detail_rows.append(record)
+
+        output.at[index, output_column] = rule.nom_tienda
+        output.at[index, "Reasig_Resultado"] = result
+        output.at[index, "Reasig_Cod_Tienda"] = rule.cod_tienda
+        output.at[index, "Reasig_Stock_Disponible"] = available
+        output.at[index, "Reasig_Stock_Restante"] = remaining
+        output.at[index, "Reasig_Prioridad"] = rule.prioridad
+        output.at[index, "Reasig_Detalle"] = reason
+        output.at[index, "Reasig_Fecha_Corte"] = stock_cutoff
+
+    # Filas fuera de alcance: se marcan pero no se tocan.
+    for index in df.index.difference(target_index):
+        output.at[index, "Reasig_Resultado"] = settings.RESULT_NOT_APPLICABLE
+
+    detail = pd.DataFrame(detail_rows) if detail_rows else pd.DataFrame(columns=PREVIEW_COLUMNS)
+    preview = detail[PREVIEW_COLUMNS] if not detail.empty else detail
+
+    store_summary = ledger.snapshot()
+    if not store_summary.empty:
+        store_summary["nom_tienda"] = store_summary["cod_tienda"].map(config.store_name)
+        store_summary = store_summary[["cod_tienda", "nom_tienda", "unidades_reasignadas"]]
+        kpis.tiendas_usadas = len(store_summary)
+
+    if not include_trace:
+        output_headers = [h for h in output_headers if h not in settings.TRACE_COLUMNS]
+
+    return ReassignmentResult(
+        output_df=output,
+        output_headers=output_headers,
+        preview=preview,
+        detail=detail,
+        kpis=kpis,
+        store_summary=store_summary,
+        output_column=output_column,
+    )
+
+
+def target_skus(df: pd.DataFrame, resolved: dict[str, str], config: PriorityConfig) -> list[str]:
+    """SKU unicos que hay que consultar en la fuente de stock."""
+    col_status = resolved[settings.COL_STATUS]
+    col_sku = resolved[settings.COL_SKU]
+    statuses = df[col_status].map(normalize_status)
+    targets = set(config.target_statuses)
+    skus = df.loc[statuses.isin(targets), col_sku].map(normalize_sku)
+    return sorted({sku for sku in skus if sku})
