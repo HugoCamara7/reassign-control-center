@@ -76,10 +76,13 @@ def _css() -> str:
     [data-testid="stToolbar"], .stDeployButton {{ display: none !important; }}
     #MainMenu, footer {{ visibility: hidden; }}
 
-    .main .block-container {{
+    /* Sin `max-width` fijo: sumado al ancho de la barra lateral desbordaba a
+       lo ancho y recortaba las tarjetas de KPI en pantallas medianas. */
+    .main .block-container,
+    [data-testid="stMainBlockContainer"] {{
         padding-top: 1.4rem;
         padding-bottom: 4rem;
-        max-width: 1480px;
+        max-width: 100% !important;
     }}
     html, body, [class*="css"] {{
         font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -99,21 +102,21 @@ def _css() -> str:
         pointer-events: none !important;
         width: 0 !important;
     }}
+    /* Streamlit colapsa la barra con `transform: translateX(-Xpx)`, asi que ese
+       es el unico override que hace falta para dejarla fija. NO se tocan
+       `position`, `left`, `margin-left` ni `flex`: Streamlit los usa para
+       calcular donde empieza el area principal, y forzarlos hacia que el
+       contenido se montara encima de la barra. */
     section[data-testid="stSidebar"],
     section[data-testid="stSidebar"][aria-expanded="false"],
     section[data-testid="stSidebar"][aria-expanded="true"] {{
-        display: block !important;
         visibility: visible !important;
         opacity: 1 !important;
         transform: none !important;
         transition: none !important;
-        position: relative !important;
-        left: 0 !important;
-        margin-left: 0 !important;
         width: var(--rcc-sidebar-w) !important;
         min-width: var(--rcc-sidebar-w) !important;
         max-width: var(--rcc-sidebar-w) !important;
-        flex: 0 0 var(--rcc-sidebar-w) !important;
         background: {p['sidebar']} !important;
         border-right: 1px solid var(--rcc-border) !important;
     }}
