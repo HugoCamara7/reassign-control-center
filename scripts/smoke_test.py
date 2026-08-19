@@ -8,7 +8,10 @@ ejecuta el motor completo, verificando las invariantes del negocio:
 * el archivo final conserva todas las columnas originales.
 
 Uso:
-    python -m scripts.smoke_test "ruta\\al\\archivo.xls"
+    python -m scripts.smoke_test "ruta\\al\\archivo.xls" [ESTADO,ESTADO...]
+
+El segundo argumento fuerza los estados a reasignar, para probar archivos que
+usan otra nomenclatura (por ejemplo PENDIENTE_ASIGNACION).
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ def synthetic_stock(skus: list[str], stores: list[str], units: int = 2) -> pd.Da
     return pd.DataFrame(rows)
 
 
-def main(source: Path) -> int:
+def main(source: Path, estados: list[str] | None = None) -> int:
     print(f"Archivo: {source.name}")
     payload = excel_io.read_orders(source.read_bytes(), source.name)
     print(f"  hoja='{payload.sheet_name}' filas={payload.n_rows} columnas={len(payload.headers)}")
@@ -56,7 +59,10 @@ def main(source: Path) -> int:
         print(f"  nota: {note}")
 
     config = load_priority()
+    if estados:
+        config.params["estados_objetivo"] = ",".join(estados)
     print(f"\nPrioridad: {config.source} | tiendas={config.store_count} sitios={config.site_count}")
+    print(f"Estados objetivo: {', '.join(config.target_statuses)}")
     for issue in config.issues:
         print(f"  aviso: {issue}")
 
@@ -152,4 +158,5 @@ def main(source: Path) -> int:
 
 if __name__ == "__main__":
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SOURCE
-    sys.exit(main(path))
+    estados = sys.argv[2].split(",") if len(sys.argv) > 2 else None
+    sys.exit(main(path, estados))

@@ -287,6 +287,38 @@ def test_site_specificity():
     assert generic == ["TIENDA A", "TIENDA B", "TIENDA C"], generic
 
 
+@case("Columnas: 'Sitio_1' se reconoce como 'Sitio' (sufijo numerico de Excel)")
+def test_alias_numeric_suffix():
+    headers = ["Order", "Estado", "SKU", "Unidades", "Sitio_1"]
+    resolved = resolve_columns(headers)
+    assert resolved.get(settings.COL_SITE) == "Sitio_1", resolved
+
+
+@case("Columnas: un encabezado con mojibake se reconoce igual")
+def test_alias_mojibake():
+    # 'Método_de_Despacho' guardado como UTF-8 leido en latin-1.
+    headers = ["Order", "Estado", "SKU", "Unidades", "MÃ©todo_de_Despacho"]
+    resolved = resolve_columns(headers)
+    assert resolved.get(settings.COL_SHIPPING_METHOD) == "MÃ©todo_de_Despacho", resolved
+
+
+@case("Columnas: un encabezado con tilde real tambien se reconoce")
+def test_alias_accent():
+    headers = ["Order", "Estado", "SKU", "Unidades", "Método_de_Despacho"]
+    resolved = resolve_columns(headers)
+    assert resolved.get(settings.COL_SHIPPING_METHOD) == "Método_de_Despacho", resolved
+
+
+@case("Estados: se pueden reasignar estados propios como PENDIENTE_ASIGNACION")
+def test_custom_status():
+    orders = make_orders([order("P1", "S1", 1, status="PENDIENTE_ASIGNACION")])
+    stock = {("S1", "10"): 5}
+    config = make_config(estados_objetivo="PENDIENTE_ASIGNACION")
+    result = run(orders, stock, config)
+    assert result.kpis.pedidos_a_reasignar == 1, result.kpis.pedidos_a_reasignar
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA A"
+
+
 @case("Errores: una fila sin SKU se marca como ERROR, no como sin stock")
 def test_missing_sku():
     orders = make_orders([order("P1", "", 1)])
