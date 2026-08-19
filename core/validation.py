@@ -10,6 +10,7 @@ Los hallazgos se clasifican en tres niveles:
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass, field
 
@@ -85,12 +86,33 @@ class ValidationReport:
         )
 
 
+def repair_mojibake(text: str) -> str:
+    """Repara texto UTF-8 leido como latin-1 (`MÃ©todo` -> `Metodo`).
+
+    Solo se usa para **comparar** encabezados. El nombre original se conserva
+    intacto en el archivo de salida, porque la plataforma destino lo espera asi.
+    """
+    if "Ã" not in text and "Â" not in text:
+        return text
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def _canonical(name: str) -> str:
-    """Encabezado comparable: sin tildes, sin simbolos, en minusculas."""
-    text = unicodedata.normalize("NFKD", as_text(name))
+    """Encabezado comparable: sin tildes, sin simbolos, en minusculas.
+
+    Tolera tres cosas que aparecen en los archivos reales: mojibake
+    (`MÃ©todo_de_Despacho`), tildes (`Método_de_Despacho`) y sufijos numericos
+    que agrega Excel al duplicar columnas (`Sitio_1`).
+    """
+    text = repair_mojibake(as_text(name))
+    text = unicodedata.normalize("NFKD", text)
     text = "".join(char for char in text if not unicodedata.combining(char))
     text = text.lower().replace("¿", "").replace("?", "")
-    return "".join(char if char.isalnum() else "_" for char in text).strip("_")
+    text = "".join(char if char.isalnum() else "_" for char in text).strip("_")
+    return re.sub(r"_\d+$", "", text)
 
 
 def resolve_columns(headers: list[str]) -> dict[str, str]:
@@ -141,8 +163,9 @@ def validate(df: pd.DataFrame, headers: list[str], config: PriorityConfig) -> Va
         report.created_output_column = True
         report.add(
             LEVEL_INFO,
-            f"Se agregara la columna '{output_column}'",
-            "El archivo de entrada no la trae; se crea al final del archivo de salida.",
+            f"La columna '{output_column}' la crea la app",
+            "Tu archivo no necesita traerla: se agrega automaticamente al final del "
+            "archivo de salida, con la tienda destino de cada pedido. No hay nada que hacer.",
         )
 
     if report.missing_required:
@@ -169,12 +192,17 @@ def validate(df: pd.DataFrame, headers: list[str], config: PriorityConfig) -> Va
             ignored,
         )
     if report.target_rows == 0:
+        encontrados = ", ".join(
+            f"{estado} ({filas})"
+            for estado, filas in sorted(report.statuses.items(), key=lambda item: -item[1])
+            if estado
+        )
         report.add(
             LEVEL_ERROR,
-            "No hay pedidos para reasignar",
-            "Ninguna fila tiene un estado objetivo ("
-            + ", ".join(sorted(targets))
-            + "). Revisa la hoja 'Parametros' de la configuracion.",
+            "Ningun pedido coincide con los estados seleccionados",
+            f"Estan seleccionados: {', '.join(sorted(targets))}. "
+            f"Pero el archivo trae: {encontrados}. "
+            "Elige los estados correctos en el selector de arriba (el cambio se aplica al momento).",
         )
         return report
 
