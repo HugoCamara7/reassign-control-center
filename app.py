@@ -28,7 +28,8 @@ from core.stock_source import (
     secrets_to_source,
     stock_cutoff,
 )
-from core.validation import validate
+from core.excel_io import normalize_status
+from core.validation import resolve_columns, validate
 from scripts.build_priority_template import build_bytes as build_priority_bytes
 from ui import components as ui
 from ui.theme import apply_login_theme, apply_theme
@@ -240,6 +241,61 @@ def step_upload() -> None:
     for key in ("report", "stock", "result", "stock_error"):
         st.session_state.pop(key, None)
     st.rerun()
+
+
+def available_statuses(payload) -> list[str]:
+    """Estados presentes en el archivo, ordenados por frecuencia."""
+    resolved = resolve_columns(payload.headers)
+    column = resolved.get(settings.COL_STATUS)
+    if not column:
+        return []
+    counts = payload.df[column].map(normalize_status).value_counts()
+    return [status for status in counts.index.tolist() if status]
+
+
+def ensure_status_selection(payload, config) -> None:
+    """Fija la seleccion inicial de estados antes de dibujar nada.
+
+    Tiene que correr antes que la barra lateral y la validacion: si se hiciera
+    dentro del propio selector, la primera pasada validaria con los estados
+    viejos y mostraria un error que ya no corresponde.
+    """
+    if "estados_objetivo_sel" in st.session_state:
+        return
+    found = available_statuses(payload)
+    if not found:
+        return
+    coincidencias = [status for status in found if status in config.target_statuses]
+    # Si el archivo no trae ninguno de los estados configurados, se preselecciona
+    # el mas frecuente: es lo que el usuario venia a reasignar.
+    st.session_state["estados_objetivo_sel"] = coincidencias or found[:1]
+
+
+def render_status_picker(payload) -> None:
+    """Selector de estados a reasignar, con lo que trae el archivo.
+
+    Sin esto habria que editar la hoja 'Parametros' del Excel de configuracion
+    cada vez que el sistema de origen cambia el nombre de un estado.
+    """
+    found = available_statuses(payload)
+    if not found:
+        return
+
+    ui.section(
+        "Paso 2",
+        "Elegir que pedidos reasignar",
+        "Marca los estados que la app debe intentar reasignar. El resto de las filas "
+        "se conservan intactas en el archivo final.",
+    )
+
+    counts = payload.df[resolve_columns(payload.headers)[settings.COL_STATUS]].map(normalize_status).value_counts()
+    st.multiselect(
+        "Estados a reasignar",
+        options=found,
+        key="estados_objetivo_sel",
+        format_func=lambda status: f"{status}  ({counts.get(status, 0)} filas)",
+        help="Tambien puede fijarse en la hoja 'Parametros' de la configuracion de prioridad.",
+    )
 
 
 def step_validate(config) -> None:
@@ -507,6 +563,12 @@ def main() -> None:
     apply_theme()
 
     config = load_priority(st.session_state.get("priority_bytes"))
+    payload = st.session_state.get("payload")
+    if payload is not None:
+        ensure_status_selection(payload, config)
+    seleccion = st.session_state.get("estados_objetivo_sel")
+    if seleccion:
+        config.params["estados_objetivo"] = ",".join(seleccion)
     bq_secrets = bigquery_secrets()
     bq_ready = is_bigquery_configured(bq_secrets)
     mode = render_sidebar(config, bq_ready)
@@ -536,6 +598,14 @@ def main() -> None:
         )
         return
 
+    render_status_picker(st.session_state["payload"])
+    if not st.session_state.get("estados_objetivo_sel"):
+        ui.note(
+            "warn",
+            "Selecciona al menos un estado",
+            "Sin estados marcados no hay pedidos que reasignar.",
+        )
+        return
     step_validate(config)
     report = st.session_state["report"]
     if report.has_errors:

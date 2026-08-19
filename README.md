@@ -19,8 +19,10 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
 ## Que hace
 
 1. Lee el Excel de pedidos (`.xls` o `.xlsx`) conservando **todas** sus columnas.
-2. Identifica unicamente los pedidos en estado `SIN_STOCK` o `SIN_DESPACHO`
-   (lista editable, tolerante a `sin stock`, `Sin-Stock`, etc.).
+2. Identifica los pedidos a reasignar. **Los estados se eligen en la propia
+   interfaz**, con los que trae el archivo: por defecto `SIN_STOCK` y
+   `SIN_DESPACHO`, pero sirve cualquiera (`PENDIENTE_ASIGNACION`, etc.).
+   Tolera `sin stock`, `Sin-Stock`, `SIN_STOCK` como el mismo estado.
 3. Toma el SKU de cada pedido y consulta el stock por tienda en BigQuery.
 4. Reasigna segun una **lista de prioridad configurable en Excel**, nunca en codigo.
 5. Descuenta el stock utilizado durante la misma corrida, para no comprometer dos
@@ -137,6 +139,14 @@ antes de estar configurado.
 Barra lateral **permanente** (no colapsable) con marca, rail de pasos, configuracion
 de prioridad y fuente de stock.
 
+**Selector de estados**: en el paso 2 se marcan los estados a reasignar entre los
+que realmente trae el archivo, sin editar ningun Excel. El resto de las filas se
+conservan intactas en la salida.
+
+**Nombres de columna tolerantes**: reconoce `Sitio_1` (sufijo que agrega Excel al
+duplicar), `Método_de_Despacho` con tilde y `MÃ©todo_de_Despacho` con la
+codificacion danada. El encabezado original se conserva byte a byte en la salida.
+
 **KPIs**: pedidos recibidos, pedidos a reasignar, reasignados, sin stock disponible,
 errores; mas unidades, tiendas usadas y tasa de exito.
 
@@ -184,7 +194,7 @@ ui/
 scripts/
   build_priority_template.py    genera la plantilla de configuracion
   build_release_zip.py          empaqueta el proyecto para GitHub
-  test_rules.py                 18 pruebas de reglas de negocio
+  test_rules.py                 22 pruebas de reglas de negocio
   test_app_flow.py              9 pruebas de la app (acceso, flujo, sesion)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
@@ -205,10 +215,11 @@ No usa FastAPI: es una aplicacion Streamlit autocontenida.
 python -m scripts.test_rules
 ```
 
-18 casos sobre el motor. Cubre prioridad, descuento temporal de stock, no-sobreventa, exclusion de tienda
+22 casos sobre el motor. Cubre prioridad, descuento temporal de stock, no-sobreventa, exclusion de tienda
 origen, `SIN OPCION DE REASIGNACION`, filtro de estados, stock de seguridad, topes
 por tienda, reasignacion parcial, agrupacion por `ShGroup`, creacion de la columna
-de salida y manejo de filas sin SKU.
+de salida, reconocimiento de columnas con tilde/mojibake/sufijo y manejo de
+filas sin SKU.
 
 ```bash
 python -m scripts.test_app_flow
