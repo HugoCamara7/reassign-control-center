@@ -135,6 +135,33 @@ def sidebar_card(label: str, lines: list[str]) -> None:
     html(f'<p class="rcc-side-label">{escape(label)}</p><div class="rcc-side-card">{body}</div>', sidebar=True)
 
 
+def sidebar_status(items: list[tuple[str, str, bool]]) -> None:
+    """Estado del sistema en una sola tarjeta: `(etiqueta, valor, ok)`.
+
+    Sustituye a los tres bloques que antes ocupaban media barra lateral. Un
+    punto verde basta para decir "esto ya esta resuelto, no lo toques".
+    """
+    filas = []
+    for label, value, ok in items:
+        estado = "ok" if ok else "warn"
+        filas.append(
+            f'<div class="rcc-status-row">'
+            f'<i class="{estado}"></i>'
+            f'<span>{escape(label)}</span>'
+            f'<b title="{escape(value)}">{escape(value)}</b>'
+            f"</div>"
+        )
+    html(f'<div class="rcc-status">{"".join(filas)}</div>', sidebar=True)
+
+
+def sidebar_footer(user: str, version: str) -> None:
+    linea = escape(user) if user else "Sesion abierta"
+    html(
+        f'<div class="rcc-side-foot"><span>{linea}</span><span>{escape(version)}</span></div>',
+        sidebar=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cuerpo
 # ---------------------------------------------------------------------------
@@ -180,22 +207,35 @@ def kpi_grid(cards: list[tuple[str, object, str, str]]) -> None:
 
 
 def kpi_from_result(kpis: KPIs) -> None:
-    reassigned_note = (
-        f"{kpis.reasignados_parciales} parciales" if kpis.reasignados_parciales else "Cobertura total"
-    )
+    """Los cinco indicadores de la corrida, en el vocabulario de operaciones."""
+    reasignadas = kpis.reasignados + kpis.reasignados_parciales
     kpi_grid(
         [
-            ("Pedidos recibidos", kpis.pedidos_recibidos, "neutral", f"{number(kpis.ordenes_unicas)} ordenes unicas"),
-            ("Pedidos a reasignar", kpis.pedidos_a_reasignar, "", f"{number(kpis.unidades_solicitadas)} unidades"),
-            ("Reasignados", kpis.reasignados + kpis.reasignados_parciales, "ok", reassigned_note),
-            ("Sin stock disponible", kpis.sin_stock, "warn", f"Tasa de exito {kpis.tasa_exito:.0f}%"),
-            ("Errores", kpis.errores, "bad", "Filas sin SKU o ilegibles"),
+            ("Ordenes recibidas", kpis.pedidos_recibidos, "neutral", ""),
+            ("Ordenes validas", kpis.pedidos_a_reasignar, "", f"{number(kpis.unidades_solicitadas)} unidades"),
+            ("Reasignadas", reasignadas, "ok", f"{number(kpis.unidades_reasignadas)} unidades"),
+            ("Sin stock", kpis.sin_stock, "warn", f"{kpis.tasa_exito:.0f}% de exito"),
+            ("Errores", kpis.errores, "bad", ""),
         ]
     )
 
 
 def validation_block(report: ValidationReport) -> None:
-    tones = {LEVEL_ERROR: "bad", LEVEL_WARNING: "warn", LEVEL_INFO: "info"}
-    for finding in report.errors + report.warnings + report.infos:
+    """Solo lo accionable a la vista; el resto queda plegado.
+
+    Antes se apilaban seis tarjetas de aviso y la pantalla parecia un log.
+    Errores y alertas se ven siempre porque exigen una decision; la
+    informacion de contexto vive en un desplegable.
+    """
+    for finding in report.errors:
         suffix = f" ({number(finding.count)} filas)" if finding.count else ""
-        note(tones.get(finding.level, "info"), finding.title + suffix, finding.detail)
+        note("bad", finding.title + suffix, finding.detail)
+    for finding in report.warnings:
+        suffix = f" ({number(finding.count)} filas)" if finding.count else ""
+        note("warn", finding.title + suffix, finding.detail)
+
+    if report.infos:
+        with st.expander(f"Detalle del archivo ({len(report.infos)})", expanded=False):
+            for finding in report.infos:
+                suffix = f" — {number(finding.count)} filas" if finding.count else ""
+                st.markdown(f"**{finding.title}{suffix}**  \n{finding.detail}")

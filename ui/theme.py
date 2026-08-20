@@ -120,14 +120,20 @@ def _css() -> str:
         background: {p['sidebar']} !important;
         border-right: 1px solid var(--rcc-border) !important;
     }}
+    /* Los contenedores internos ocupan el 100% del ancho ya reservado por la
+       barra. Fijarles los mismos 340px que al `section` los hacia desbordar
+       por el padding del padre, y el contenido salia cortado a la derecha. */
     section[data-testid="stSidebar"] > div,
     div[data-testid="stSidebarContent"],
     div[data-testid="stSidebarUserContent"] {{
-        width: var(--rcc-sidebar-w) !important;
-        min-width: var(--rcc-sidebar-w) !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
         overflow-x: hidden !important;
     }}
-    section[data-testid="stSidebar"] > div {{ padding: 18px 16px 28px !important; }}
+    section[data-testid="stSidebar"] > div {{ padding: 18px 14px 26px !important; }}
+    /* Nada dentro de la barra puede ser mas ancho que ella. */
+    section[data-testid="stSidebar"] * {{ max-width: 100% !important; }}
     section[data-testid="stSidebar"] p,
     section[data-testid="stSidebar"] label,
     section[data-testid="stSidebar"] span,
@@ -171,6 +177,38 @@ def _css() -> str:
         background: var(--rcc-surface); padding: 14px 15px; margin-bottom: 12px;
         box-shadow: 0 8px 18px rgba(15,23,42,0.05);
     }}
+
+    /* ---------- estado del sistema (una sola tarjeta) ---------- */
+    .rcc-status {{
+        border: 1px solid var(--rcc-border); border-radius: 16px;
+        background: var(--rcc-surface); padding: 6px 14px; margin: 4px 0 14px;
+        box-shadow: 0 8px 18px rgba(15,23,42,0.05);
+    }}
+    .rcc-status-row {{
+        display: grid; grid-template-columns: 8px 1fr auto;
+        align-items: center; gap: 9px; padding: 9px 0;
+        border-bottom: 1px solid #EDF2F9; font-size: 12.5px;
+    }}
+    .rcc-status-row:last-child {{ border-bottom: 0; }}
+    .rcc-status-row i {{
+        width: 8px; height: 8px; border-radius: 50%; display: block;
+        background: {p['success']}; box-shadow: 0 0 0 3px rgba(22,163,74,.14);
+    }}
+    .rcc-status-row i.warn {{
+        background: {p['warning']}; box-shadow: 0 0 0 3px rgba(217,119,6,.16);
+    }}
+    .rcc-status-row span {{ color: #64748B !important; font-weight: 800; }}
+    .rcc-status-row b {{
+        color: var(--rcc-ink); font-weight: 900; max-width: 150px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+    }}
+
+    .rcc-side-foot {{
+        display: flex; justify-content: space-between; align-items: center; gap: 8px;
+        margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rcc-border);
+        font-size: 11.5px; font-weight: 750; color: #7C8AA3 !important;
+    }}
+    .rcc-side-foot span {{ color: #7C8AA3 !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
     .rcc-side-card p {{ margin: 0 0 6px; font-size: 13px; font-weight: 800; line-height: 1.4; }}
     .rcc-side-card p:last-child {{ margin-bottom: 0; }}
     .rcc-side-card b {{ color: var(--rcc-ink); }}
