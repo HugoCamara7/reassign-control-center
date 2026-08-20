@@ -87,9 +87,10 @@ python -m scripts.build_priority_template
 python -m streamlit run app.py
 ```
 
-El repositorio incluye `config/prioridad_tiendas.ejemplo.xlsx` como referencia.
-El archivo real (`config/prioridad_tiendas.xlsx`) esta en `.gitignore`: es
-operativo, cambia seguido y no tiene por que viajar en el repo.
+**La prioridad ya viene configurada.** `config/prioridad_tiendas.xlsx` viaja
+versionado en el repositorio, asi que la app desplegada la carga sola y no pide
+subir nada. Para cambiarla: edita ese archivo y haz commit, o subela desde la
+barra lateral solo para esa sesion.
 
 ---
 
@@ -183,6 +184,11 @@ errores; mas unidades, tiendas usadas y tasa de exito.
 Stock disponible | Resultado`, con buscador y pestanas por resultado, por tienda y
 de validacion.
 
+**Verificacion antes de descargar**: la app audita su propio resultado
+recontando el stock consumido desde el detalle. Si algo no cuadra (sobre-uso de
+stock, tienda fuera de prioridad, columna perdida, indicadores descuadrados) el
+Excel no se genera y se explica el motivo.
+
 **Descargas**:
 
 | Archivo | Para que |
@@ -209,8 +215,7 @@ para simulaciones puntuales del equipo.
 app.py                          entrypoint Streamlit (flujo de 6 pasos)
 config/
   settings.py                   columnas, rutas, defaults (sin reglas de negocio)
-  prioridad_tiendas.ejemplo.xlsx  configuracion de ejemplo (versionada)
-  prioridad_tiendas.xlsx        configuracion real (no versionada)
+  prioridad_tiendas.xlsx        prioridad de tiendas (versionada)
 core/
   excel_io.py                   lectura/escritura fiel de .xls y .xlsx
   validation.py                 validaciones y deteccion de riesgos
@@ -225,6 +230,7 @@ scripts/
   import_priority.py            convierte la lista simple del area comercial
   build_release_zip.py          empaqueta el proyecto para GitHub
   test_rules.py                 29 pruebas de reglas de negocio
+  test_stock_ledger.py          11 pruebas del descuento temporal de stock
   test_app_flow.py              9 pruebas de la app (acceso, flujo, sesion)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
@@ -251,6 +257,16 @@ origen, `SIN OPCION DE REASIGNACION`, filtro de estados, stock de seguridad, top
 por tienda, reasignacion parcial, agrupacion por `ShGroup`, creacion de la columna
 de salida, reconocimiento de columnas con tilde/mojibake/sufijo y manejo de
 filas sin SKU.
+
+```bash
+python -m scripts.test_stock_ledger
+```
+
+11 casos sobre el descuento temporal, la parte critica. Defienden una sola
+invariante: para todo par (SKU, tienda), la suma de unidades reasignadas nunca
+supera el stock inicial de BigQuery. Incluyen varias ordenes del mismo SKU,
+ordenes de varias unidades, tiendas que llegan a cero y una carga de 300
+ordenes contra 40 unidades.
 
 ```bash
 python -m scripts.test_app_flow

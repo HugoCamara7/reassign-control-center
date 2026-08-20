@@ -1,14 +1,27 @@
 Archivos a actualizar en HugoCamara7/reassign-control-center (rama main)
 
-NUEVO       scripts/import_priority.py
+NUEVO       config/prioridad_tiendas.xlsx
+NUEVO       scripts/test_stock_ledger.py
 MODIFICADO  .gitignore
 MODIFICADO  README.md
 MODIFICADO  app.py
-MODIFICADO  config/prioridad_tiendas.ejemplo.xlsx
 MODIFICADO  config/settings.py
 MODIFICADO  core/engine.py
 MODIFICADO  core/priority.py
-MODIFICADO  scripts/build_priority_template.py
-MODIFICADO  scripts/test_rules.py
+MODIFICADO  scripts/smoke_test.py
+MODIFICADO  scripts/test_app_flow.py
+MODIFICADO  ui/components.py
+MODIFICADO  ui/theme.py
+
+--- BORRAR del repo (ya no existen en el proyecto) ---
+BORRAR      .streamlit/config
+BORRAR      _QUE_ACTUALIZAR.txt
+BORRAR      assets/aas
+BORRAR      capturas/asd
+BORRAR      config/con
+BORRAR      config/prioridad_tiendas.ejemplo.xlsx
+BORRAR      core/core
+BORRAR      docs/eee
+BORRAR      download
 
 Descomprimir sobre la raiz del repo, respetando las carpetas.

@@ -10,9 +10,9 @@ data/*.csv
 outputs/
 *.zip
 
-# Configuracion real de prioridad: es operativa y cambia seguido.
-# En el repo se versiona solo el ejemplo (prioridad_tiendas.ejemplo.xlsx).
-config/prioridad_tiendas.xlsx
+# NOTA: config/prioridad_tiendas.xlsx SI se versiona. No contiene datos
+# sensibles (codigos, nombres y orden de tiendas) y la app desplegada lo
+# necesita: si no viaja en el repo, el servidor arranca sin prioridad.
 
 # Python
 __pycache__/

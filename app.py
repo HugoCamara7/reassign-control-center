@@ -125,90 +125,58 @@ def render_sidebar(config, bq_ready: bool) -> str:
     ui.sidebar_brand()
     ui.sidebar_steps(current_step())
 
-    st.sidebar.markdown('<p class="rcc-side-label">Prioridad de tiendas</p>', unsafe_allow_html=True)
-    uploaded = st.sidebar.file_uploader(
-        "Configuracion (.xlsx)",
-        type=["xlsx"],
-        key="priority_upload",
-        help="Hojas: Prioridad, Tiendas, Parametros. La app nunca usa una prioridad escrita en codigo.",
-    )
-    if uploaded is not None:
-        st.session_state["priority_bytes"] = uploaded.getvalue()
-
-    st.sidebar.download_button(
-        "Descargar plantilla",
-        data=build_priority_bytes(),
-        file_name="prioridad_tiendas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch",
+    # --- estado del sistema, en una sola tarjeta ---------------------------
+    # La prioridad viaja versionada en el repositorio: si esta cargada no hay
+    # nada que pedirle al usuario, asi que no se muestra ningun cargador.
+    table = resolve_stock_table(bigquery_secrets())
+    ui.sidebar_status(
+        [
+            ("Prioridad", f"{config.store_count} tiendas", bool(config.rules)),
+            ("Stock", table.split(".")[-1] if bq_ready else "sin conectar", bq_ready),
+            ("Estados", ", ".join(config.target_statuses), True),
+        ]
     )
 
-    if config.rules:
-        ui.sidebar_card(
-            "Configuracion activa",
-            [
-                f"Origen: <b>{config.source}</b>",
-                f"Tiendas: <b>{config.store_count}</b> &nbsp;|&nbsp; Sitios: <b>{config.site_count}</b>",
-                f"Estados: <b>{', '.join(config.target_statuses)}</b>",
-                f"Excluir tienda origen: <b>{'SI' if config.flag('excluir_tienda_origen') else 'NO'}</b>",
-            ],
-        )
-    else:
-        ui.sidebar_card("Configuracion activa", ["<b>Sin lista de prioridad cargada.</b>"])
-
-    st.sidebar.markdown('<p class="rcc-side-label">Fuente de stock</p>', unsafe_allow_html=True)
-    options = ["BigQuery (solo lectura)", "Archivo de stock"]
-    mode = st.sidebar.radio(
-        "Fuente",
-        options,
-        index=0 if bq_ready else 1,
-        label_visibility="collapsed",
-        key="stock_mode",
-    )
-
-    if mode == options[0]:
-        if bq_ready:
-            table = resolve_stock_table(bigquery_secrets())
-            ui.sidebar_card(
-                "BigQuery",
-                [
-                    "Estado: <b>configurado</b>",
-                    f"Tabla: <b>{table.split('.')[-1]}</b>",
-                    "Modo: <b>solo lectura</b>",
-                ],
-            )
-        else:
-            ui.sidebar_card(
-                "BigQuery",
-                [
-                    "Estado: <b>sin configurar</b>",
-                    "Completa <b>.streamlit/secrets.toml</b> o usa un archivo de stock.",
-                ],
-            )
-    else:
+    mode = "BigQuery (solo lectura)" if bq_ready else "Archivo de stock"
+    if not bq_ready:
         stock_file = st.sidebar.file_uploader(
-            "Stock (.xlsx / .csv)",
+            "Archivo de stock (.xlsx / .csv)",
             type=["xlsx", "xls", "csv"],
             key="stock_upload",
-            help="Columnas minimas: sku, cod_tienda, stock.",
+            help="Columnas minimas: sku, cod_tienda, stock. Solo se pide porque BigQuery no esta configurado.",
         )
         if stock_file is not None:
             st.session_state["stock_file"] = (stock_file.getvalue(), stock_file.name)
-        if st.session_state.get("stock_file"):
-            ui.sidebar_card("Archivo de stock", [f"Cargado: <b>{st.session_state['stock_file'][1]}</b>"])
+
+    with st.sidebar.expander("Cambiar prioridad de tiendas", expanded=False):
+        st.caption(f"Activa: {config.source}")
+        uploaded = st.file_uploader(
+            "Subir otra (.xlsx)",
+            type=["xlsx"],
+            key="priority_upload",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            st.session_state["priority_bytes"] = uploaded.getvalue()
+        st.download_button(
+            "Descargar plantilla",
+            data=build_priority_bytes(),
+            file_name="prioridad_tiendas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
 
     st.sidebar.divider()
     if st.sidebar.button("Reiniciar proceso", width="stretch"):
         reset_run()
         st.rerun()
-
     if st.session_state.get("authenticated"):
         if st.sidebar.button("Cerrar sesion", width="stretch"):
             st.session_state.clear()
             st.rerun()
-        st.sidebar.caption(f"Sesion: {st.session_state.get('auth_user', '')}")
 
-    st.sidebar.caption(f"{settings.APP_NAME} v{settings.APP_VERSION}")
+    usuario = st.session_state.get("auth_user", "")
+    ui.sidebar_footer(usuario, f"v{settings.APP_VERSION}")
     return mode
 
 
@@ -282,7 +250,7 @@ def render_status_picker(payload) -> None:
         return
 
     ui.section(
-        "Paso 2",
+        "Alcance",
         "Elegir que pedidos reasignar",
         "Marca los estados que la app debe intentar reasignar. El resto de las filas "
         "se conservan intactas en el archivo final.",
@@ -312,25 +280,26 @@ def step_validate(config) -> None:
 
     ui.kpi_grid(
         [
-            ("Filas leidas", report.total_rows, "neutral", f"{len(report.columns)} columnas"),
-            ("Pedidos a reasignar", report.target_rows, "", ", ".join(config.target_statuses)),
-            ("Estados distintos", len(report.statuses), "", "Ver detalle abajo"),
-            ("Alertas", len(report.warnings), "warn", "Revisar antes de continuar"),
-            ("Errores", len(report.errors), "bad", "Bloquean el proceso"),
+            ("Ordenes recibidas", report.total_rows, "neutral", f"{len(report.columns)} columnas"),
+            ("Ordenes validas", report.target_rows, "ok" if report.target_rows else "warn",
+             ", ".join(config.target_statuses)),
+            ("Alertas", len(report.warnings), "warn" if report.warnings else "neutral", ""),
+            ("Errores", len(report.errors), "bad" if report.errors else "neutral", ""),
         ]
     )
 
-    for note_text in payload.notes:
-        ui.note("info", "Lectura del archivo", note_text)
+    # Los avisos de lectura y de configuracion solo aparecen si hay algo real
+    # que decir; en una corrida normal esta zona queda vacia.
     for issue in config.issues:
         ui.note("warn", "Configuracion de prioridad", issue)
 
     ui.validation_block(report)
 
-    left, right = st.columns([1, 1])
-    with left:
-        with st.expander("Estados encontrados", expanded=True):
-            statuses = pd.DataFrame(
+    with st.expander("Detalle tecnico", expanded=False):
+        left, right = st.columns(2)
+        left.caption("Estados encontrados")
+        left.dataframe(
+            pd.DataFrame(
                 [
                     {
                         "Estado": status or "(vacio)",
@@ -339,20 +308,22 @@ def step_validate(config) -> None:
                     }
                     for status, count in sorted(report.statuses.items(), key=lambda item: -item[1])
                 ]
-            )
-            st.dataframe(statuses, width="stretch", hide_index=True)
-    with right:
-        with st.expander("Columnas reconocidas", expanded=False):
-            mapping = pd.DataFrame(
-                [
-                    {"Campo del motor": key, "Columna del archivo": value}
-                    for key, value in report.resolved.items()
-                ]
-            )
-            st.dataframe(mapping, width="stretch", hide_index=True)
-
-    with st.expander("Lista de prioridad activa", expanded=False):
-        st.dataframe(priority_to_frame(config), width="stretch", hide_index=True, height=280)
+            ),
+            width="stretch", hide_index=True,
+        )
+        right.caption("Columnas reconocidas")
+        right.dataframe(
+            pd.DataFrame(
+                [{"Campo": key, "Columna del archivo": value} for key, value in report.resolved.items()]
+            ),
+            width="stretch", hide_index=True,
+        )
+        if payload.notes:
+            st.caption("Lectura del archivo")
+            for note_text in payload.notes:
+                st.markdown(f"- {note_text}")
+        st.caption(f"Prioridad activa · {config.source}")
+        st.dataframe(priority_to_frame(config), width="stretch", hide_index=True, height=220)
 
 
 def step_stock(config, mode: str) -> None:
@@ -535,6 +506,23 @@ def step_review(config) -> None:
         "Descargar Excel final",
         f"Mantiene las {len(payload.headers)} columnas originales y escribe la tienda en "
         f"'{result.output_column}'.",
+    )
+
+    # Auditoria independiente del resultado: recuenta el stock consumido desde
+    # el detalle, sin confiar en el motor. Si algo no cuadra, se ve antes de
+    # que el archivo salga hacia la plataforma.
+    problemas = engine.verify_result(
+        result, build_stock_index(st.session_state["stock"]), config, payload.headers
+    )
+    if problemas:
+        for problema in problemas:
+            ui.note("bad", "Revision del resultado", problema)
+        st.stop()
+    ui.note(
+        "ok",
+        "Resultado verificado",
+        "Stock consumido dentro de lo disponible, prioridad respetada, columnas "
+        "originales intactas y sin opcion correctamente marcados.",
     )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
