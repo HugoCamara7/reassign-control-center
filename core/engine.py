@@ -4,14 +4,18 @@ Reglas implementadas, en el orden en que se aplican a cada pedido:
 
 1. Solo se procesan las filas cuyo `Estado` esta en `estados_objetivo`.
 2. Se recorre la lista de prioridad del sitio/marca del pedido, de menor a
-   mayor `prioridad`.
+   mayor `prioridad`. Las bandas de prioridad traen empates, y dentro de una
+   banda gana la tienda con **mas stock** (`ordenar_por_stock`).
 3. Se descarta la tienda de origen del propio pedido (`excluir_tienda_origen`).
 4. Se descarta cualquier tienda cuyo stock disponible, ya descontado el
    stock de seguridad y lo comprometido en esta misma corrida, no alcance
    para las unidades solicitadas.
-5. La primera tienda que cumple gana; su stock se descuenta en memoria de
-   inmediato, para que el mismo par (SKU, tienda) no se comprometa dos veces.
-6. Si ninguna tienda cumple, la fila queda como `SIN OPCION DE REASIGNACION`.
+5. Se prefiere una tienda que conserve `reserva_por_tienda` unidades despues
+   de ceder. Solo si ninguna puede, se acepta dejar una tienda en cero: es el
+   caso de "queda 1, mandalo igual", y queda registrado en `Reasig_Detalle`.
+6. La tienda elegida cede el stock, que se descuenta en memoria de inmediato
+   para que el mismo par (SKU, tienda) no se comprometa dos veces.
+7. Si ninguna tienda cumple, la fila queda como `SIN OPCION DE REASIGNACION`.
 
 El descuento es **siempre en memoria**. BigQuery no se modifica nunca.
 """
@@ -160,40 +164,78 @@ def _pick_store(
     ledger: _Ledger,
     exclude_origin: bool,
     allow_partial: bool,
+    reserva: int = 0,
+    sort_by_stock: bool = True,
 ) -> tuple[StoreRule | None, int, int, str]:
-    """Elige tienda destino. Devuelve `(regla, disponible, a_tomar, motivo)`."""
+    """Elige tienda destino. Devuelve `(regla, disponible, a_tomar, motivo)`.
+
+    La eleccion respeta la prioridad del area comercial y, dentro de ella,
+    cuida el stock de la tienda que cede la unidad:
+
+    1. Se ordenan las candidatas por banda de prioridad. Como las bandas traen
+       empates (la lista real tiene 26 tiendas en la banda 11), dentro de cada
+       banda gana la que tiene **mas stock**, no la primera alfabeticamente.
+    2. Primera pasada: solo tiendas que quedarian con al menos `reserva`
+       unidades despues de ceder. Asi no se vacia una tienda que tiene poco.
+    3. Segunda pasada: si ninguna cumple, recien ahi se acepta dejar la tienda
+       en cero. Es el caso de "solo queda 1, mandalo igual".
+    """
     if not rules:
         return None, 0, 0, "El sitio/marca no tiene tiendas en la lista de prioridad."
 
-    best_partial: tuple[StoreRule, int] | None = None
+    candidatas: list[tuple[StoreRule, int]] = []
     skipped_origin = False
-    seen_stock = False
 
     for rule in rules:
         if exclude_origin and _is_origin(rule, origin_code, origin_name):
             skipped_origin = True
             continue
-        if rule.max_unidades and ledger.store_used(rule.cod_tienda) >= rule.max_unidades:
-            continue
+        cap_restante = None
+        if rule.max_unidades:
+            cap_restante = rule.max_unidades - ledger.store_used(rule.cod_tienda)
+            if cap_restante <= 0:
+                continue
 
         available = ledger.available(sku, rule.cod_tienda, rule.stock_seguridad)
-        if rule.max_unidades:
-            available = min(available, rule.max_unidades - ledger.store_used(rule.cod_tienda))
+        if cap_restante is not None:
+            available = min(available, cap_restante)
         if available > 0:
-            seen_stock = True
-        if available >= units:
-            return rule, available, units, ""
-        if allow_partial and available > 0 and best_partial is None:
-            best_partial = (rule, available)
+            candidatas.append((rule, available))
 
-    if best_partial:
-        rule, available = best_partial
+    if not candidatas:
+        reason = "Ninguna tienda de la lista tiene stock para este SKU."
+        if skipped_origin:
+            reason += " Se descarto la tienda de origen."
+        return None, 0, 0, reason
+
+    if sort_by_stock:
+        # `sorted` es estable: ante misma banda y mismo stock se conserva el
+        # orden original de la lista de prioridad.
+        candidatas.sort(key=lambda item: (item[0].prioridad, -item[1]))
+
+    # Pasada 1: la tienda conserva `reserva` unidades despues de ceder.
+    if reserva > 0:
+        for rule, available in candidatas:
+            if available - units >= reserva:
+                return rule, available, units, ""
+
+    # Pasada 2: alcanza justo, aunque la tienda quede en cero.
+    for rule, available in candidatas:
+        if available >= units:
+            motivo = ""
+            if reserva > 0:
+                restante = available - units
+                motivo = (
+                    f"Ultimo recurso: ninguna tienda conservaba {reserva} unidad(es) de reserva; "
+                    f"esta queda en {restante}."
+                )
+            return rule, available, units, motivo
+
+    if allow_partial:
+        rule, available = max(candidatas, key=lambda item: item[1])
         return rule, available, available, f"Solo se cubren {available} de {units} unidades."
 
-    if not seen_stock:
-        reason = "Ninguna tienda de la lista tiene stock para este SKU."
-    else:
-        reason = f"Ninguna tienda tiene las {units} unidades requeridas."
+    reason = f"Ninguna tienda tiene las {units} unidades requeridas."
     if skipped_origin:
         reason += " Se descarto la tienda de origen."
     return None, 0, 0, reason
@@ -214,6 +256,8 @@ def reassign(
     allow_partial = config.flag("permitir_reasignacion_parcial")
     group_by_shgroup = config.flag("agrupar_por_shgroup")
     group_fallback = config.flag("fallback_linea_si_grupo_falla")
+    reserva = max(0, config.number("reserva_por_tienda", 1))
+    sort_by_stock = config.flag("ordenar_por_stock")
     target_statuses = set(config.target_statuses)
 
     col_status = resolved[settings.COL_STATUS]
@@ -283,7 +327,7 @@ def reassign(
                 if exclude_origin and _is_origin(rule, origin_code, origin_name):
                     continue
                 if all(
-                    ledger.available(sku, rule.cod_tienda, rule.stock_seguridad) >= units
+                    ledger.available(sku, rule.cod_tienda, rule.stock_seguridad) - units >= reserva
                     for sku, units in needs.items()
                 ):
                     chosen = rule
@@ -346,7 +390,7 @@ def reassign(
                 # a la busqueda normal en lugar de asignar de mas.
                 rule, available, take, reason = _pick_store(
                     config.rules_for(site, brand), sku, units, origin_code, origin_name,
-                    ledger, exclude_origin, allow_partial,
+                    ledger, exclude_origin, allow_partial, reserva, sort_by_stock,
                 )
         elif key in group_failed and not group_fallback:
             rule, available, take, reason = (
@@ -358,7 +402,7 @@ def reassign(
         else:
             rule, available, take, reason = _pick_store(
                 config.rules_for(site, brand), sku, units, origin_code, origin_name,
-                ledger, exclude_origin, allow_partial,
+                ledger, exclude_origin, allow_partial, reserva, sort_by_stock,
             )
             if key in group_failed and rule is not None:
                 reason = (reason + " ").strip() + " Despacho dividido: ninguna tienda cubria el ShGroup completo."

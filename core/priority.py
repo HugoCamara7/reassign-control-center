@@ -208,6 +208,27 @@ def _lower_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Encabezados que identifican a la tabla de prioridad, en cualquier variante.
+_PRIORITY_HEADERS = {"prioridad", "orden", "priority"}
+_STORE_HEADERS = {
+    "cod_tienda", "codigo_tienda", "bodega", "numbodega", "id_tienda", "id", "codigo",
+    "nom_tienda", "nombre_tienda", "tienda", "nombrebodega", "nombre",
+}
+
+
+def _detect_priority_sheet(book: pd.ExcelFile) -> str:
+    """Primera hoja que tenga una columna de prioridad y una de tienda."""
+    for name in book.sheet_names:
+        try:
+            head = _lower_columns(book.parse(name, nrows=0, dtype=object))
+        except Exception:
+            continue
+        columns = set(head.columns)
+        if columns & _PRIORITY_HEADERS and columns & _STORE_HEADERS:
+            return name
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Lectura
 # ---------------------------------------------------------------------------
@@ -269,8 +290,12 @@ def load_priority(source: str | Path | bytes | None = None) -> PriorityConfig:
         try:
             stores_df = _lower_columns(book.parse(stores_sheet, dtype=object).dropna(how="all"))
             for _, row in stores_df.iterrows():
-                code = normalize_store_code(_pick(row, "cod_tienda", "codigo_tienda", "numbodega", "bodega"))
-                name = as_text(_pick(row, "nom_tienda", "nombre_tienda", "nombrebodega", "tienda"))
+                code = normalize_store_code(
+                    _pick(row, "cod_tienda", "codigo_tienda", "numbodega", "bodega", "id_tienda", "id")
+                )
+                name = as_text(
+                    _pick(row, "nom_tienda", "nombre_tienda", "nombrebodega", "tienda", "nombre")
+                )
                 if not code and not name:
                     continue
                 config.stores[code] = {
@@ -287,6 +312,16 @@ def load_priority(source: str | Path | bytes | None = None) -> PriorityConfig:
     # --- Prioridad ---------------------------------------------------------
     priority_sheet = available.get(settings.SHEET_PRIORITY.lower())
     if not priority_sheet:
+        # El area comercial suele mandar un archivo de una sola hoja con
+        # `ID Tienda | nombre | Prioridad`. Se detecta por sus columnas en vez
+        # de exigir que la hoja se llame "Prioridad".
+        priority_sheet = _detect_priority_sheet(book)
+        if priority_sheet:
+            config.issues.append(
+                f"No hay hoja '{settings.SHEET_PRIORITY}': se leyo la prioridad de "
+                f"'{priority_sheet}'. Sin hoja 'Parametros', se usan las reglas por defecto."
+            )
+    if not priority_sheet:
         config.issues.append(
             f"Falta la hoja '{settings.SHEET_PRIORITY}': sin ella no se puede reasignar."
         )
@@ -299,8 +334,10 @@ def load_priority(source: str | Path | bytes | None = None) -> PriorityConfig:
         return config
 
     for line, (_, row) in enumerate(priority_df.iterrows(), start=2):
-        code = normalize_store_code(_pick(row, "cod_tienda", "codigo_tienda", "bodega", "numbodega"))
-        name = as_text(_pick(row, "nom_tienda", "nombre_tienda", "tienda", "nombrebodega"))
+        code = normalize_store_code(
+            _pick(row, "cod_tienda", "codigo_tienda", "bodega", "numbodega", "id_tienda", "id", "codigo")
+        )
+        name = as_text(_pick(row, "nom_tienda", "nombre_tienda", "tienda", "nombrebodega", "nombre"))
         if not code and not name:
             continue
         if not code:
