@@ -244,15 +244,6 @@ def load_priority(source: str | Path | bytes | None = None) -> PriorityConfig:
         config.source = "archivo subido"
     else:
         path = Path(source)
-        if not path.exists() and settings.EXAMPLE_PRIORITY_FILE.exists():
-            # Despliegue nuevo: el archivo operativo aun no existe, pero el
-            # ejemplo viaja en el repositorio y permite trabajar de inmediato.
-            path = settings.EXAMPLE_PRIORITY_FILE
-            config.issues.append(
-                f"No se encontro '{Path(source).name}': se esta usando "
-                f"'{path.name}' del repositorio. Revisa el orden de prioridad y sube "
-                "tu propia version desde la barra lateral."
-            )
         if not path.exists():
             config.issues.append(
                 f"No se encontro '{path.name}'. Se usan los valores por defecto; "
@@ -306,8 +297,8 @@ def load_priority(source: str | Path | bytes | None = None) -> PriorityConfig:
                 }
         except Exception as exc:
             config.issues.append(f"Hoja '{settings.SHEET_STORES}' ilegible: {exc}")
-    else:
-        config.issues.append(f"Falta la hoja '{settings.SHEET_STORES}' en la configuracion.")
+    # La hoja 'Tiendas' es opcional: si no esta, el maestro se completa mas
+    # abajo con las propias filas de prioridad.
 
     # --- Prioridad ---------------------------------------------------------
     priority_sheet = available.get(settings.SHEET_PRIORITY.lower())

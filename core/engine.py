@@ -477,6 +477,107 @@ def reassign(
     )
 
 
+def verify_result(
+    result: "ReassignmentResult",
+    stock_index: dict[tuple[str, str], int],
+    config: PriorityConfig,
+    original_headers: list[str],
+) -> list[str]:
+    """Revisa el resultado antes de generar el Excel. Devuelve los problemas.
+
+    Es una auditoria independiente del motor: recalcula el consumo de stock
+    desde cero sobre el detalle producido, en vez de confiar en el ledger que
+    uso el propio motor. Si ambos no coinciden, algo esta mal y hay que verlo
+    antes de que el archivo salga a la plataforma.
+    """
+    problemas: list[str] = []
+    detail = result.detail
+    if detail.empty:
+        return ["La corrida no produjo ningun pedido procesado."]
+
+    validos = set(config.target_statuses)
+
+    # 1. Solo se tocaron estados validos.
+    fuera = result.output_df[
+        (result.output_df["Reasig_Resultado"] == settings.RESULT_NOT_APPLICABLE)
+        & (result.output_df[result.output_column].map(as_text) != "")
+    ]
+    if len(fuera):
+        problemas.append(
+            f"{len(fuera)} filas fuera de los estados {sorted(validos)} recibieron tienda."
+        )
+
+    # 2 y 4. Reconteo independiente: nadie usa stock ya consumido ni de mas.
+    consumo: dict[tuple[str, str], int] = defaultdict(int)
+    for _, row in detail.iterrows():
+        code = as_text(row["Cod tienda reasignada"])
+        if code:
+            consumo[(row["SKU"], code)] += int(row["Unidades"])
+    for (sku, code), usado in sorted(consumo.items()):
+        disponible = stock_index.get((sku, code), 0)
+        if usado > disponible:
+            problemas.append(
+                f"SKU {sku} en tienda {code}: se repartieron {usado} unidades "
+                f"y BigQuery reporto {disponible}."
+            )
+
+    # 3. La tienda asignada esta en la lista de prioridad del sitio del pedido.
+    for _, row in detail.iterrows():
+        code = as_text(row["Cod tienda reasignada"])
+        if not code:
+            continue
+        permitidas = {rule.cod_tienda for rule in config.rules_for(row["Sitio"], row["Marca"])}
+        if code not in permitidas:
+            problemas.append(
+                f"Pedido {row['Pedido']}: la tienda {code} no esta en la prioridad "
+                f"del sitio '{row['Sitio']}'."
+            )
+            break  # con un caso basta para revisar la configuracion
+
+    # 3b. Nunca la tienda de origen.
+    if config.flag("excluir_tienda_origen"):
+        for _, row in detail.iterrows():
+            origen = normalize_store_name(row["Tienda origen"])
+            destino = normalize_store_name(row["Tienda reasignada"])
+            if origen and destino and origen == destino:
+                problemas.append(f"Pedido {row['Pedido']} se reasigno a su propia tienda origen.")
+                break
+
+    # 5. Ninguna columna original se perdio.
+    faltantes = [h for h in original_headers if h not in result.output_df.columns]
+    if faltantes:
+        problemas.append(f"Se perdieron columnas del archivo original: {faltantes}.")
+
+    # 6. La columna de salida existe y coincide con el detalle.
+    if result.output_column not in result.output_headers:
+        problemas.append(f"Falta la columna '{result.output_column}' en el archivo de salida.")
+    else:
+        escritas = int((result.output_df[result.output_column].map(as_text) != "").sum())
+        esperadas = int((detail["Tienda reasignada"].map(as_text) != "").sum())
+        if escritas != esperadas:
+            problemas.append(
+                f"'{result.output_column}' tiene {escritas} valores pero se reasignaron "
+                f"{esperadas} pedidos."
+            )
+
+    # 7. Los sin opcion quedan marcados y sin tienda.
+    sin_opcion = detail[detail["Resultado"] == settings.RESULT_NO_OPTION]
+    con_tienda = sin_opcion[sin_opcion["Tienda reasignada"].map(as_text) != ""]
+    if len(con_tienda):
+        problemas.append(f"{len(con_tienda)} pedidos sin opcion tienen tienda asignada.")
+
+    # 8. Los KPI cuadran con el detalle.
+    kpis = result.kpis
+    suma = kpis.reasignados + kpis.reasignados_parciales + kpis.sin_stock + kpis.errores
+    if suma != kpis.pedidos_a_reasignar:
+        problemas.append(
+            f"Los indicadores no cuadran: {suma} clasificados vs "
+            f"{kpis.pedidos_a_reasignar} pedidos validos."
+        )
+
+    return problemas
+
+
 def target_skus(df: pd.DataFrame, resolved: dict[str, str], config: PriorityConfig) -> list[str]:
     """SKU unicos que hay que consultar en la fuente de stock."""
     col_status = resolved[settings.COL_STATUS]
