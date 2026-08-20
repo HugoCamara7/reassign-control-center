@@ -127,6 +127,8 @@ DEFAULT_PARAMS = {
     "fallback_linea_si_grupo_falla": "SI",
     "incluir_stock_bodega_central": "SI",
     "stock_seguridad_global": "0",
+    "reserva_por_tienda": "1",
+    "ordenar_por_stock": "SI",
     "max_unidades_por_tienda": "0",
     "columna_salida": COL_REASSIGNED,
 }
@@ -142,6 +144,15 @@ PARAM_HELP = {
     ),
     "incluir_stock_bodega_central": "SI = en la bodega 320 se suma stock_bodega al disponible.",
     "stock_seguridad_global": "Unidades que nunca se tocan en ninguna tienda.",
+    "reserva_por_tienda": (
+        "Unidades que deberia conservar la tienda despues de ceder. Con 1, se evita "
+        "dejarla en cero; si ninguna tienda puede conservarlas, recien ahi se acepta "
+        "la ultima unidad. 0 desactiva la regla."
+    ),
+    "ordenar_por_stock": (
+        "SI = dentro de la misma banda de prioridad gana la tienda con mas stock. "
+        "NO = gana la primera de la lista."
+    ),
     "max_unidades_por_tienda": "Tope de unidades reasignadas por tienda en una corrida. 0 = sin tope.",
     "columna_salida": "Nombre exacto de la columna donde se escribe la tienda reasignada.",
 }
