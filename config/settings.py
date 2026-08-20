@@ -18,11 +18,10 @@ CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
 ASSETS_DIR = BASE_DIR / "assets"
 
+# Unica fuente de prioridad. Viaja versionada en el repositorio para que la
+# app desplegada la tenga sin que nadie suba nada a mano. No hay archivo de
+# ejemplo aparte: duplicar la configuracion solo genera dudas sobre cual manda.
 PRIORITY_FILE = CONFIG_DIR / "prioridad_tiendas.xlsx"
-# Respaldo versionado en el repositorio: en un despliegue nuevo el archivo real
-# todavia no existe (esta en .gitignore), y sin lista de prioridad la app no
-# puede reasignar nada. Con esto arranca util desde el primer minuto.
-EXAMPLE_PRIORITY_FILE = CONFIG_DIR / "prioridad_tiendas.ejemplo.xlsx"
 
 # --- Hojas de la configuracion editable -------------------------------------
 SHEET_PRIORITY = "Prioridad"
