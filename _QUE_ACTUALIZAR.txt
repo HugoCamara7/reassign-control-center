@@ -1,0 +1,14 @@
+Archivos a actualizar en HugoCamara7/reassign-control-center (rama main)
+
+NUEVO       scripts/import_priority.py
+MODIFICADO  .gitignore
+MODIFICADO  README.md
+MODIFICADO  app.py
+MODIFICADO  config/prioridad_tiendas.ejemplo.xlsx
+MODIFICADO  config/settings.py
+MODIFICADO  core/engine.py
+MODIFICADO  core/priority.py
+MODIFICADO  scripts/build_priority_template.py
+MODIFICADO  scripts/test_rules.py
+
+Descomprimir sobre la raiz del repo, respetando las carpetas.

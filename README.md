@@ -25,11 +25,16 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
    Tolera `sin stock`, `Sin-Stock`, `SIN_STOCK` como el mismo estado.
 3. Toma el SKU de cada pedido y consulta el stock por tienda en BigQuery.
 4. Reasigna segun una **lista de prioridad configurable en Excel**, nunca en codigo.
-5. Descuenta el stock utilizado durante la misma corrida, para no comprometer dos
+   La prioridad viene en bandas con empates, y dentro de una banda gana la tienda
+   con **mas stock**.
+5. **Cuida a la tienda que cede**: prefiere una que conserve unidades despues de
+   ceder, en vez de vaciar la que tiene poco. Solo si ninguna puede, acepta la
+   ultima unidad, y lo deja anotado en `Reasig_Detalle`.
+6. Descuenta el stock utilizado durante la misma corrida, para no comprometer dos
    veces el mismo par (SKU, tienda).
-6. Nunca reasigna a la tienda de origen del propio pedido.
-7. Marca `SIN OPCION DE REASIGNACION` cuando ninguna tienda alcanza.
-8. Genera el Excel final con las columnas originales intactas y la tienda escrita
+7. Nunca reasigna a la tienda de origen del propio pedido.
+8. Marca `SIN OPCION DE REASIGNACION` cuando ninguna tienda alcanza.
+9. Genera el Excel final con las columnas originales intactas y la tienda escrita
    en `Nom Tda Reasignada` (la crea si el archivo no la trae).
 
 Antes de programar nada se analizo un archivo real de 402 pedidos y 58 columnas:
@@ -104,6 +109,28 @@ tocar el servidor.
 `sitio` y `marca` aceptan `*` como comodin. **Una fila con el sitio exacto siempre
 desplaza a las filas comodin**, asi el resultado es predecible.
 
+### Como se elige la tienda
+
+1. **Banda de prioridad** del area comercial: la 1 antes que la 2, y asi.
+2. **Dentro de la banda**, la tienda con mas stock (`ordenar_por_stock`). Importa
+   porque las bandas traen empates: la lista real tiene 26 tiendas en la banda 11.
+3. **Reserva**: en la primera pasada solo entran tiendas que quedarian con al
+   menos `reserva_por_tienda` unidades. Si ninguna de la lista puede, recien ahi
+   se acepta dejar una tienda en cero, y la fila lo declara en `Reasig_Detalle`
+   ("Ultimo recurso...").
+
+Ambos valores se ajustan tambien desde la interfaz, en el paso de reasignacion.
+
+### Importar la lista del area comercial
+
+Si te mandan un Excel simple de una hoja (`ID Tienda | nombre | Prioridad`), la app
+lo lee tal cual. Para convertirlo al formato de 3 hojas y poder tocar los
+parametros:
+
+```bash
+python -m scripts.import_priority "ruta\Priorizacion Tiendas.xlsx"
+```
+
 ### Parametros
 
 | Parametro | Default | Efecto |
@@ -115,6 +142,8 @@ desplaza a las filas comodin**, asi el resultado es predecible.
 | `fallback_linea_si_grupo_falla` | `SI` | si nadie cubre el grupo, resolver linea por linea |
 | `incluir_stock_bodega_central` | `SI` | en la bodega 320 suma `stock_bodega` |
 | `stock_seguridad_global` | `0` | unidades intocables en todas las tiendas |
+| `reserva_por_tienda` | `1` | unidades que la tienda deberia conservar tras ceder; `0` desactiva |
+| `ordenar_por_stock` | `SI` | dentro de la misma banda gana la tienda con mas stock |
 | `max_unidades_por_tienda` | `0` | tope por tienda y corrida (`0` = sin tope) |
 | `columna_salida` | `Nom Tda Reasignada` | nombre exacto de la columna destino |
 
@@ -193,8 +222,9 @@ ui/
   components.py                 hero, KPIs, notas, rail de pasos
 scripts/
   build_priority_template.py    genera la plantilla de configuracion
+  import_priority.py            convierte la lista simple del area comercial
   build_release_zip.py          empaqueta el proyecto para GitHub
-  test_rules.py                 22 pruebas de reglas de negocio
+  test_rules.py                 29 pruebas de reglas de negocio
   test_app_flow.py              9 pruebas de la app (acceso, flujo, sesion)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
@@ -215,7 +245,8 @@ No usa FastAPI: es una aplicacion Streamlit autocontenida.
 python -m scripts.test_rules
 ```
 
-22 casos sobre el motor. Cubre prioridad, descuento temporal de stock, no-sobreventa, exclusion de tienda
+29 casos sobre el motor. Cubre prioridad, reserva de stock por tienda,
+desempate por profundidad de stock, descuento temporal de stock, no-sobreventa, exclusion de tienda
 origen, `SIN OPCION DE REASIGNACION`, filtro de estados, stock de seguridad, topes
 por tienda, reasignacion parcial, agrupacion por `ShGroup`, creacion de la columna
 de salida, reconocimiento de columnas con tilde/mojibake/sufijo y manejo de

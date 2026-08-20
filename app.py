@@ -424,7 +424,32 @@ def step_reassign(config) -> None:
         ]
     )
 
-    include_trace = st.checkbox(
+    ajustes = st.columns([1.1, 1.1, 1.6])
+    reserva = ajustes[0].number_input(
+        "Unidades a dejar en la tienda",
+        min_value=0,
+        max_value=20,
+        value=config.number("reserva_por_tienda", 1),
+        step=1,
+        help=(
+            "Cuantas unidades deberia conservar la tienda despues de ceder. Con 1, "
+            "se evita vaciarla; si ninguna tienda de la lista puede conservarlas, "
+            "recien ahi se acepta la ultima unidad. 0 desactiva la regla."
+        ),
+    )
+    config.params["reserva_por_tienda"] = str(reserva)
+
+    ordenar = ajustes[1].checkbox(
+        "Dentro de la misma prioridad, preferir la tienda con mas stock",
+        value=config.flag("ordenar_por_stock"),
+        help=(
+            "La lista de prioridad viene en bandas con empates. Con esto activado, "
+            "dentro de una banda gana la tienda mas surtida."
+        ),
+    )
+    config.params["ordenar_por_stock"] = "SI" if ordenar else "NO"
+
+    include_trace = ajustes[2].checkbox(
         "Incluir columnas de trazabilidad en el Excel final",
         value=False,
         help=(
