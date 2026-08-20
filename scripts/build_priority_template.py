@@ -237,13 +237,31 @@ def build_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def write_template(path: Path | None = None) -> Path:
+def write_template(path: Path | None = None, force: bool = False) -> Path:
+    """Escribe la plantilla. No pisa un archivo existente salvo `force`.
+
+    El archivo operativo suele contener la lista real del area comercial, que
+    no se puede regenerar desde aqui: sobrescribirlo perderia su trabajo.
+    """
     target = Path(path) if path else settings.PRIORITY_FILE
+    if target.exists() and not force:
+        raise FileExistsError(
+            f"'{target}' ya existe y no se sobrescribe. "
+            "Usa --force si de verdad quieres reemplazarlo, o pasa otra ruta."
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(build_bytes())
     return target
 
 
 if __name__ == "__main__":
-    written = write_template()
+    import sys
+
+    argumentos = [arg for arg in sys.argv[1:] if arg != "--force"]
+    forzar = "--force" in sys.argv
+    destino = Path(argumentos[0]) if argumentos else None
+    try:
+        written = write_template(destino, force=forzar)
+    except FileExistsError as exc:
+        raise SystemExit(f"{exc}")
     print(f"Plantilla generada en: {written}")

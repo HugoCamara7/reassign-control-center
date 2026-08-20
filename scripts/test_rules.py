@@ -104,7 +104,10 @@ def case(name: str):
 @case("Regla 5: gana la tienda de mayor prioridad, no la de mas stock")
 def test_priority_wins():
     orders = make_orders([order("P1", "S1", 1)])
-    stock = {("S1", "10"): 1, ("S1", "20"): 99}
+    # TIENDA A tiene poco frente a B, pero suficiente para no quedar vacia:
+    # la banda de prioridad manda. (Con 1 sola unidad ganaria B, ver
+    # "Stock: no se vacia una tienda...").
+    stock = {("S1", "10"): 3, ("S1", "20"): 99}
     result = run(orders, stock, make_config())
     assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA A", result.detail.loc[0].to_dict()
 
@@ -285,6 +288,77 @@ def test_site_specificity():
     assert names == ["TIENDA C"], names
     generic = [rule.nom_tienda for rule in config.rules_for("columbiaperu", "Columbia")]
     assert generic == ["TIENDA A", "TIENDA B", "TIENDA C"], generic
+
+
+@case("Stock: no se vacia una tienda si otra puede ceder y quedar con unidades")
+def test_reserve_protects_last_unit():
+    orders = make_orders([order("P1", "S1", 1)])
+    # TIENDA A es la primera de la lista pero solo tiene 1 unidad.
+    stock = {("S1", "10"): 1, ("S1", "20"): 5}
+    result = run(orders, stock, make_config(reserva_por_tienda="1"))
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA B", result.detail.loc[0].to_dict()
+    assert result.detail.loc[0, "Stock restante"] == 4
+
+
+@case("Stock: si TODAS tienen una sola unidad, recien ahi se toma la ultima")
+def test_last_unit_as_last_resort():
+    orders = make_orders([order("P1", "S1", 1)])
+    stock = {("S1", "10"): 1, ("S1", "20"): 1}
+    result = run(orders, stock, make_config(reserva_por_tienda="1"))
+    # Se respeta la prioridad: gana TIENDA A, la primera de la lista.
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA A", result.detail.loc[0].to_dict()
+    assert result.detail.loc[0, "Stock restante"] == 0
+    assert "Ultimo recurso" in result.detail.loc[0, "Detalle"], result.detail.loc[0, "Detalle"]
+
+
+@case("Stock: reserva 2 exige que la tienda quede con 2 despues de ceder")
+def test_reserve_two():
+    orders = make_orders([order("P1", "S1", 1)])
+    # A queda en 1 (insuficiente para reserva 2), B queda en 2.
+    stock = {("S1", "10"): 2, ("S1", "20"): 3}
+    result = run(orders, stock, make_config(reserva_por_tienda="2"))
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA B", result.detail.loc[0].to_dict()
+
+
+@case("Stock: reserva 0 desactiva la regla y manda la prioridad pura")
+def test_reserve_off():
+    orders = make_orders([order("P1", "S1", 1)])
+    stock = {("S1", "10"): 1, ("S1", "20"): 9}
+    result = run(orders, stock, make_config(reserva_por_tienda="0", ordenar_por_stock="NO"))
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA A", result.detail.loc[0].to_dict()
+
+
+@case("Empates: con la misma prioridad gana la tienda con mas stock")
+def test_tiebreak_by_stock():
+    config = make_config(ordenar_por_stock="SI", reserva_por_tienda="0")
+    for rule in config.rules:  # las tres tiendas quedan en la misma banda
+        rule["prioridad"] = 5
+    orders = make_orders([order("P1", "S1", 1)])
+    stock = {("S1", "10"): 2, ("S1", "20"): 9, ("S1", "30"): 4}
+    result = run(orders, stock, config)
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA B", result.detail.loc[0].to_dict()
+
+
+@case("Empates: sin ordenar por stock gana la primera de la lista")
+def test_tiebreak_without_stock():
+    config = make_config(ordenar_por_stock="NO", reserva_por_tienda="0")
+    for rule in config.rules:
+        rule["prioridad"] = 5
+    orders = make_orders([order("P1", "S1", 1)])
+    stock = {("S1", "10"): 2, ("S1", "20"): 9}
+    result = run(orders, stock, config)
+    assert result.detail.loc[0, "Tienda reasignada"] == "TIENDA A", result.detail.loc[0].to_dict()
+
+
+@case("Stock: la reserva se respeta pedido tras pedido en la misma corrida")
+def test_reserve_across_orders():
+    orders = make_orders([order("P1", "S1", 1), order("P2", "S1", 1)])
+    # A tiene 2: cede una y queda en 1; para el segundo pedido ya no califica.
+    stock = {("S1", "10"): 2, ("S1", "20"): 5}
+    result = run(orders, stock, make_config(reserva_por_tienda="1", ordenar_por_stock="NO"))
+    assert list(result.detail["Tienda reasignada"]) == ["TIENDA A", "TIENDA B"], list(
+        result.detail["Tienda reasignada"]
+    )
 
 
 @case("Columnas: 'Sitio_1' se reconoce como 'Sitio' (sufijo numerico de Excel)")
