@@ -112,15 +112,31 @@ def test_flow_after_login():
     assert not app.exception, app.exception
 
 
-@case("La lista de prioridad se carga y se refleja en la barra lateral")
+@case("La prioridad versionada se carga sola y se ve en la barra lateral")
 def test_priority_visible():
+    from core.priority import load_priority
+
     app = start(SECRETS)
     app.session_state["authenticated"] = True
     app.run()
     sidebar_text = " ".join(element.value for element in app.sidebar.markdown)
     assert "SIN_STOCK, SIN_DESPACHO" in sidebar_text, "no se ven los estados objetivo"
-    assert "Excluir tienda origen" in sidebar_text
+
+    # La barra reporta el numero real de tiendas del archivo del repositorio.
+    tiendas = load_priority().store_count
+    assert tiendas > 0, "la prioridad versionada no se cargo"
+    assert f"{tiendas} tiendas" in sidebar_text, f"no aparece '{tiendas} tiendas'"
     assert not app.exception, app.exception
+
+
+@case("Sin avisos de configuracion cuando la prioridad ya esta cargada")
+def test_no_config_noise():
+    app = start(SECRETS)
+    app.session_state["authenticated"] = True
+    app.run()
+    cuerpo = " ".join(element.value for element in app.markdown)
+    for ruido in ("No se encontro", "sube tu propia version", "prioridad_tiendas.ejemplo"):
+        assert ruido not in cuerpo, f"la app sigue pidiendo configuracion: '{ruido}'"
 
 
 @case("Cerrar sesion devuelve a la pantalla de acceso")

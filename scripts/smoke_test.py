@@ -97,6 +97,9 @@ def main(source: Path, estados: list[str] | None = None) -> int:
     # --- invariantes -------------------------------------------------------
     failures: list[str] = []
 
+    # La misma auditoria que corre la app antes de dejar descargar el Excel.
+    failures.extend(engine.verify_result(result, index, config, payload.headers))
+
     taken: dict[tuple[str, str], int] = defaultdict(int)
     for _, row in result.detail.iterrows():
         code = excel_io.as_text(row["Cod tienda reasignada"])
