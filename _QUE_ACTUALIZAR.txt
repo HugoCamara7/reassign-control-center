@@ -1,17 +1,10 @@
 Archivos a actualizar en HugoCamara7/reassign-control-center (rama main)
 
-NUEVO       config/prioridad_tiendas.xlsx
-NUEVO       scripts/test_stock_ledger.py
+NUEVO       scripts/test_stock_cutoff.py
 MODIFICADO  .gitignore
 MODIFICADO  README.md
 MODIFICADO  app.py
-MODIFICADO  config/settings.py
-MODIFICADO  core/engine.py
-MODIFICADO  core/priority.py
-MODIFICADO  scripts/smoke_test.py
-MODIFICADO  scripts/test_app_flow.py
-MODIFICADO  ui/components.py
-MODIFICADO  ui/theme.py
+MODIFICADO  core/stock_source.py
 
 --- BORRAR del repo (ya no existen en el proyecto) ---
 BORRAR      .streamlit/config

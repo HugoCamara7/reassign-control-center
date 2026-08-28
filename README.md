@@ -24,6 +24,9 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
    `SIN_DESPACHO`, pero sirve cualquiera (`PENDIENTE_ASIGNACION`, etc.).
    Tolera `sin stock`, `Sin-Stock`, `SIN_STOCK` como el mismo estado.
 3. Toma el SKU de cada pedido y consulta el stock por tienda en BigQuery.
+   **Solo entra el ultimo corte**: el stock es una foto, no un acumulado. Si la
+   fuente trae historico, los cortes anteriores se descartan y la app informa
+   cuantas filas dejo fuera.
 4. Reasigna segun una **lista de prioridad configurable en Excel**, nunca en codigo.
    La prioridad viene en bandas con empates, y dentro de una banda gana la tienda
    con **mas stock**.
@@ -231,6 +234,7 @@ scripts/
   build_release_zip.py          empaqueta el proyecto para GitHub
   test_rules.py                 29 pruebas de reglas de negocio
   test_stock_ledger.py          11 pruebas del descuento temporal de stock
+  test_stock_cutoff.py          10 pruebas del filtro por fecha de corte
   test_app_flow.py              9 pruebas de la app (acceso, flujo, sesion)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
@@ -267,6 +271,14 @@ invariante: para todo par (SKU, tienda), la suma de unidades reasignadas nunca
 supera el stock inicial de BigQuery. Incluyen varias ordenes del mismo SKU,
 ordenes de varias unidades, tiendas que llegan a cero y una carga de 300
 ordenes contra 40 unidades.
+
+```bash
+python -m scripts.test_stock_cutoff
+```
+
+10 casos sobre el filtro de fecha: historico de dos anios, fechas `DD/MM/YYYY`
+(donde comparar como texto elige mal), fechas con hora, y consultas propias sin
+filtro de fecha.
 
 ```bash
 python -m scripts.test_app_flow

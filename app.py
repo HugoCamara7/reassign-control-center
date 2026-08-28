@@ -395,6 +395,17 @@ def step_reassign(config) -> None:
         ]
     )
 
+    # El stock es una foto: si la fuente trajo historico, se aviso cuantas
+    # filas de cortes anteriores se dejaron fuera. Sumarlas inventaria stock.
+    descartadas = int(stock.attrs.get("filas_descartadas_por_fecha", 0))
+    if descartadas:
+        ui.note(
+            "info",
+            f"Se ignoraron {descartadas:,} filas de cortes anteriores".replace(",", " "),
+            f"La fuente trajo historico. Solo se usa la foto del {cutoff}, porque el stock "
+            "no se acumula entre fechas.",
+        )
+
     ajustes = st.columns([1.1, 1.1, 1.6])
     reserva = ajustes[0].number_input(
         "Unidades a dejar en la tienda",
