@@ -83,6 +83,41 @@ def _rename_query_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=mapping) if mapping else df
 
 
+def latest_cutoff_value(values: pd.Series) -> Any:
+    """Ultima fecha de corte, comparando como fecha y no como texto.
+
+    Importa el detalle: si `fecha_corte` llega como texto en formato
+    `DD/MM/YYYY`, comparar alfabeticamente elige mal — `31/12/2025` es mayor
+    que `20/08/2026` como cadena. Por eso se parsea antes de comparar, y solo
+    si eso falla se cae al maximo textual.
+    """
+    textos = values.map(as_text)
+    textos = textos[textos != ""]
+    if textos.empty:
+        return None
+    fechas = pd.to_datetime(textos, errors="coerce", dayfirst=True, format="mixed")
+    if fechas.notna().any():
+        return textos[fechas == fechas.max()].iloc[0]
+    return textos.max()
+
+
+def keep_latest_cutoff(df: pd.DataFrame) -> tuple[pd.DataFrame, int, str]:
+    """Deja solo las filas del ultimo corte. Devuelve `(df, descartadas, corte)`.
+
+    El stock es una foto, no un acumulado: si el origen trae historico, sumar
+    todos los cortes multiplica las unidades disponibles e inventa stock que
+    no existe.
+    """
+    if df.empty or "fecha_corte" not in df.columns:
+        return df, 0, ""
+    corte = latest_cutoff_value(df["fecha_corte"])
+    if corte is None:
+        return df, 0, ""
+    vigentes = df["fecha_corte"].map(as_text) == as_text(corte)
+    descartadas = int((~vigentes).sum())
+    return df[vigentes].reset_index(drop=True), descartadas, as_text(corte)
+
+
 def _finalize(df: pd.DataFrame, include_central_warehouse: bool) -> pd.DataFrame:
     """Normaliza tipos y calcula la columna `stock` efectiva."""
     if df.empty:
@@ -116,7 +151,15 @@ def _finalize(df: pd.DataFrame, include_central_warehouse: bool) -> pd.DataFrame
     df["stock"] = df["stock"].clip(lower=0).astype(int)
 
     df = df[df["sku"] != ""]
-    return df[STOCK_COLUMNS].reset_index(drop=True)
+    df = df[STOCK_COLUMNS].reset_index(drop=True)
+
+    # Garantia unica para las dos fuentes: nunca se mezclan cortes. Si el
+    # origen trae historico (o una consulta propia sin filtro de fecha), aqui
+    # se queda solo la foto mas reciente.
+    df, descartadas, corte = keep_latest_cutoff(df)
+    df.attrs["filas_descartadas_por_fecha"] = descartadas
+    df.attrs["fecha_corte"] = corte
+    return df
 
 
 @dataclass
@@ -269,11 +312,14 @@ class ManualStockSource:
         if wanted:
             data = data[data["sku"].isin(wanted)]
 
-        # Un mismo SKU/tienda puede venir repetido: se consolida.
+        # `_finalize` ya dejo solo el ultimo corte. Recien despues se consolida
+        # un mismo SKU/tienda repetido DENTRO de ese corte; sumar entre cortes
+        # distintos inflaria el stock disponible.
         data = _finalize(data, self.include_central_warehouse)
         if data.empty:
             return data
-        return (
+        atributos = dict(data.attrs)
+        consolidado = (
             data.groupby(["sku", "cod_tienda"], as_index=False)
             .agg(
                 stock_tiendas=("stock_tiendas", "sum"),
@@ -282,6 +328,8 @@ class ManualStockSource:
                 fecha_corte=("fecha_corte", "max"),
             )[STOCK_COLUMNS]
         )
+        consolidado.attrs.update(atributos)
+        return consolidado
 
 
 def build_stock_index(stock: pd.DataFrame) -> dict[tuple[str, str], int]:
