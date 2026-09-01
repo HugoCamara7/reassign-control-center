@@ -77,6 +77,10 @@ apunta a la tabla ARTI** (maestro de productos), no al stock. Esta app la
 | *(ausente)* | `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi` |
 | `table` | **ignorada** (es la tabla ARTI) |
 
+Si la tabla usa un nombre de columna de reserva que la app no reconoce, se declara
+en los secrets: `stock_reserved_columns = "mi_columna_reservada"` (acepta varias
+separadas por coma; el nombre que menciona bodega descuenta del stock de bodega).
+
 Tambien acepta un `stock_query` propio. Si trae el parametro `@skus` se consulta
 por lotes; si no, se ejecuta completa una vez y se filtra en memoria. Las columnas
 pueden venir como `sku`/`id_producto` y `cod_tienda`/`codigo_tienda`.
@@ -115,6 +119,10 @@ desplaza a las filas comodin**, asi el resultado es predecible.
 
 ### Como se elige la tienda
 
+0. **El stock que entra ya es neto**: al stock de sala (y al de bodega en la 320)
+   se le restan las unidades reservadas. Lo reservado ya tiene dueno, asi que una
+   tienda con 3 unidades y 3 reservadas figura con 0 disponible y no es candidata.
+   Se apaga con `descontar_stock_reservado = NO`.
 1. **Banda de prioridad** del area comercial: la 1 antes que la 2, y asi.
 2. **Dentro de la banda**, la tienda con mas stock (`ordenar_por_stock`). Importa
    porque las bandas traen empates: la lista real tiene 26 tiendas en la banda 11.
@@ -145,6 +153,7 @@ python -m scripts.import_priority "ruta\Priorizacion Tiendas.xlsx"
 | `agrupar_por_shgroup` | `NO` | todas las lineas de un despacho a la misma tienda |
 | `fallback_linea_si_grupo_falla` | `SI` | si nadie cubre el grupo, resolver linea por linea |
 | `incluir_stock_bodega_central` | `SI` | en la bodega 320 suma `stock_bodega` |
+| `descontar_stock_reservado` | `SI` | resta del disponible las unidades reservadas |
 | `stock_seguridad_global` | `0` | unidades intocables en todas las tiendas |
 | `reserva_por_tienda` | `1` | unidades que la tienda deberia conservar tras ceder; `0` desactiva |
 | `ordenar_por_stock` | `SI` | dentro de la misma banda gana la tienda con mas stock |
@@ -279,6 +288,14 @@ python -m scripts.test_stock_cutoff
 10 casos sobre el filtro de fecha: historico de dos anios, fechas `DD/MM/YYYY`
 (donde comparar como texto elige mal), fechas con hora, y consultas propias sin
 filtro de fecha.
+
+```bash
+python -m scripts.test_stock_reservado
+```
+
+17 casos sobre el descuento de stock reservado: reserva total, parcial y negativa,
+reserva de bodega en la 320 frente a una tienda fisica, deteccion de la columna en
+el esquema de BigQuery y el interruptor `descontar_stock_reservado`.
 
 ```bash
 python -m scripts.test_app_flow

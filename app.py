@@ -143,7 +143,11 @@ def render_sidebar(config, bq_ready: bool) -> str:
             "Archivo de stock (.xlsx / .csv)",
             type=["xlsx", "xls", "csv"],
             key="stock_upload",
-            help="Columnas minimas: sku, cod_tienda, stock. Solo se pide porque BigQuery no esta configurado.",
+            help=(
+                "Columnas minimas: sku, cod_tienda, stock. Si trae 'stock_reservado', "
+                "esas unidades se descuentan del disponible. Solo se pide porque "
+                "BigQuery no esta configurado."
+            ),
         )
         if stock_file is not None:
             st.session_state["stock_file"] = (stock_file.getvalue(), stock_file.name)
@@ -341,8 +345,21 @@ def step_stock(config, mode: str) -> None:
     if st.session_state.get("stock_error"):
         ui.note("bad", "Fallo la consulta de stock", st.session_state["stock_error"])
 
-    columns = st.columns([1, 1, 2])
+    columns = st.columns([1, 1.6, 1.4])
     launch = columns[0].button("Consultar stock", type="primary", width="stretch")
+    # Se decide antes de consultar, no despues: en BigQuery el descuento se
+    # aplica en la propia consulta.
+    descontar_reserva = columns[1].checkbox(
+        "Descontar unidades reservadas",
+        value=config.flag("descontar_stock_reservado"),
+        key="descontar_stock_reservado",
+        help=(
+            "Lo reservado ya tiene dueno y no se puede volver a prometer. Con esto "
+            "activado, una tienda con 3 unidades y 3 reservadas queda en 0 disponible "
+            "y no recibe reasignaciones."
+        ),
+    )
+    config.params["descontar_stock_reservado"] = "SI" if descontar_reserva else "NO"
 
     if not launch:
         return
@@ -353,14 +370,14 @@ def step_stock(config, mode: str) -> None:
     try:
         with st.spinner("Consultando stock..."):
             if mode.startswith("BigQuery"):
-                source = secrets_to_source(bigquery_secrets(), include_central)
+                source = secrets_to_source(bigquery_secrets(), include_central, descontar_reserva)
                 stock = source.fetch(skus)
             else:
                 cached = st.session_state.get("stock_file")
                 if not cached:
                     raise ValueError("Sube un archivo de stock en la barra lateral.")
                 frame = excel_io.read_stock_file(cached[0], cached[1])
-                stock = ManualStockSource(frame, include_central).fetch(skus)
+                stock = ManualStockSource(frame, include_central, descontar_reserva).fetch(skus)
     except Exception as exc:
         st.session_state["stock_error"] = str(exc)
         st.rerun()
@@ -379,6 +396,12 @@ def step_reassign(config) -> None:
 
     covered = stock["sku"].nunique() if not stock.empty else 0
     requested = len(engine.target_skus(payload.df, report.resolved, config))
+    disponible = int(stock["stock"].sum()) if not stock.empty else 0
+    reservado = (
+        int(stock["stock_reservado"].sum())
+        if not stock.empty and "stock_reservado" in stock.columns
+        else 0
+    )
 
     ui.section(
         "Paso 4",
@@ -390,10 +413,33 @@ def step_reassign(config) -> None:
             ("SKU consultados", requested, "neutral", "Estados objetivo"),
             ("SKU con stock", covered, "ok" if covered else "warn", f"{requested - covered} sin stock en ninguna tienda"),
             ("Combinaciones SKU/tienda", len(stock), "", "Filas devueltas"),
-            ("Unidades disponibles", int(stock["stock"].sum()) if not stock.empty else 0, "", "Antes de descuentos"),
+            ("Unidades reservadas", reservado, "warn" if reservado else "", "Descontadas del disponible"),
+            ("Unidades disponibles", disponible, "", "Ya neto de reservas"),
             ("Fecha de corte", cutoff or "-", "neutral", "Ultimo cierre de stock"),
         ]
     )
+
+    # La reserva no se puede descontar si no llego en la fuente. Callarselo
+    # devolveria el problema original: tiendas con todo reservado tratadas
+    # como disponibles.
+    if config.flag("descontar_stock_reservado") and not stock.empty:
+        columnas_reserva = list(stock.attrs.get("reserva_columnas") or [])
+        if columnas_reserva:
+            ui.note(
+                "ok",
+                f"Reserva descontada: {reservado:,} unidades".replace(",", " "),
+                "El disponible ya es neto. Columnas de reserva usadas: "
+                f"{', '.join(columnas_reserva)}.",
+            )
+        else:
+            ui.note(
+                "warn",
+                "No se encontro columna de reserva en la fuente de stock",
+                "El disponible que se muestra es el stock bruto: puede incluir unidades "
+                "ya reservadas. Declara la columna en los secrets con "
+                "'stock_reserved_columns' (BigQuery) o agregala al archivo de stock "
+                "como 'stock_reservado'.",
+            )
 
     # El stock es una foto: si la fuente trajo historico, se aviso cuantas
     # filas de cortes anteriores se dejaron fuera. Sumarlas inventaria stock.

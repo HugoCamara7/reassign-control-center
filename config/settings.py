@@ -125,6 +125,7 @@ DEFAULT_PARAMS = {
     "agrupar_por_shgroup": "NO",
     "fallback_linea_si_grupo_falla": "SI",
     "incluir_stock_bodega_central": "SI",
+    "descontar_stock_reservado": "SI",
     "stock_seguridad_global": "0",
     "reserva_por_tienda": "1",
     "ordenar_por_stock": "SI",
@@ -142,6 +143,11 @@ PARAM_HELP = {
         "completo, se resuelve linea por linea. NO = el grupo entero queda sin opcion."
     ),
     "incluir_stock_bodega_central": "SI = en la bodega 320 se suma stock_bodega al disponible.",
+    "descontar_stock_reservado": (
+        "SI = al stock de tienda y bodega se le restan las unidades reservadas. "
+        "Lo reservado ya tiene dueno: si una tienda tiene 3 unidades y 3 reservadas, "
+        "su disponible es 0 y no recibe reasignaciones. NO = se usa el stock bruto."
+    ),
     "stock_seguridad_global": "Unidades que nunca se tocan en ninguna tienda.",
     "reserva_por_tienda": (
         "Unidades que deberia conservar la tienda despues de ceder. Con 1, se evita "

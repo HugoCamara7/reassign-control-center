@@ -204,6 +204,7 @@ Sembrada con las 88 bodegas del maestro ecommerce de Forus.
 | `agrupar_por_shgroup` | `NO` | todas las lineas de un despacho a la misma tienda |
 | `fallback_linea_si_grupo_falla` | `SI` | si nadie cubre el grupo, resuelve linea por linea |
 | `incluir_stock_bodega_central` | `SI` | en la bodega 320 suma `stock_bodega` |
+| `descontar_stock_reservado` | `SI` | resta las unidades reservadas del disponible |
 | `stock_seguridad_global` | `0` | reserva minima en todas las tiendas |
 | `max_unidades_por_tienda` | `0` | tope global por tienda |
 | `columna_salida` | `Nom Tda Reasignada` | nombre exacto de la columna destino |
@@ -221,7 +222,14 @@ Tabla: `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
 | `codigo_tienda` | codigo de bodega/tienda |
 | `stock_tiendas` | unidades en sala |
 | `stock_bodega` | unidades en bodega — **solo suman en la bodega central 320** |
+| reserva | unidades reservadas — **se restan del disponible** |
 | `fecha_corte` | se toma siempre el ultimo cierre disponible |
+
+La columna de reserva se busca en el esquema real de la tabla antes de armar la
+consulta (`stock_reservado`, `reservado`, `reserva`, `stock_reservado_tiendas` /
+`stock_reservado_bodega`, entre otros alias). Si la tabla usa otro nombre se
+declara en los secrets con `stock_reserved_columns`; si no hay ninguna, la app
+consulta sin descuento y **lo avisa en pantalla** en vez de callarselo.
 
 La consulta esta parametrizada por `@skus` (lotes de 5.000) y filtra por el maximo
 `fecha_corte`. **Es exclusivamente `SELECT`**: la app no tiene ninguna ruta de
