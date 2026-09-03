@@ -226,3 +226,15 @@ Tabla: `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
 La consulta esta parametrizada por `@skus` (lotes de 5.000) y filtra por el maximo
 `fecha_corte`. **Es exclusivamente `SELECT`**: la app no tiene ninguna ruta de
 escritura hacia BigQuery.
+
+El filtro **no compara `CAST(id_producto AS STRING)` a secas**: normaliza el codigo
+dentro de la propia consulta (mayusculas, `TRIM`, se recorta el `.0` de un campo
+numerico y los ceros a la izquierda de un codigo todo-digitos) con la misma regla
+que `core.excel_io.normalize_sku` aplica al archivo. Comparar las formas crudas
+hacia que `0005438957` (Excel) y `5438957` (BigQuery) no se encontraran nunca: la
+consulta devolvia cero filas y todos los pedidos terminaban en
+`SIN OPCION DE REASIGNACION` aunque hubiera stock.
+
+Las filas repetidas de un mismo par (SKU, tienda) dentro del corte vigente se
+**suman**. Antes se conservaba solo la ultima, lo que descartaba unidades reales
+cuando la fuente abria el stock por talla o por almacen.

@@ -26,6 +26,7 @@ from core.stock_source import (
     is_bigquery_configured,
     resolve_stock_table,
     secrets_to_source,
+    stock_coverage,
     stock_cutoff,
 )
 from core.excel_io import normalize_status
@@ -100,7 +101,7 @@ def require_login() -> bool:
 
 
 def reset_run(keep_config: bool = True) -> None:
-    for key in ("payload", "report", "stock", "result", "stock_error"):
+    for key in ("payload", "report", "stock", "stock_skus", "result", "stock_error"):
         st.session_state.pop(key, None)
     if not keep_config:
         st.session_state.pop("priority_bytes", None)
@@ -206,7 +207,7 @@ def step_upload() -> None:
 
     st.session_state["payload"] = payload
     st.session_state["orders_signature"] = signature
-    for key in ("report", "stock", "result", "stock_error"):
+    for key in ("report", "stock", "stock_skus", "result", "stock_error"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -331,6 +332,20 @@ def step_stock(config, mode: str) -> None:
     report = st.session_state["report"]
     skus = engine.target_skus(payload.df, report.resolved, config)
 
+    # El stock consultado vale solo para los SKU que se pidieron. Si despues se
+    # cambian los estados objetivo o la lista de prioridad, la foto en memoria
+    # queda corta y los SKU nuevos apareceran como "sin stock" sin haberse
+    # consultado nunca. Por eso se descarta y se pide consultar de nuevo.
+    if "stock" in st.session_state and st.session_state.get("stock_skus") != skus:
+        for key in ("stock", "stock_skus", "result"):
+            st.session_state.pop(key, None)
+        ui.note(
+            "warn",
+            "Cambio la lista de SKU a consultar",
+            "Se descarto el stock de la consulta anterior porque ya no corresponde "
+            "a los pedidos seleccionados. Vuelve a consultar el stock.",
+        )
+
     ui.section(
         "Paso 3",
         "Consultar stock disponible",
@@ -349,36 +364,48 @@ def step_stock(config, mode: str) -> None:
 
     st.session_state.pop("stock_error", None)
     include_central = config.flag("incluir_stock_bodega_central")
+    central_codes = config.param("codigos_bodega_central")
 
     try:
         with st.spinner("Consultando stock..."):
             if mode.startswith("BigQuery"):
-                source = secrets_to_source(bigquery_secrets(), include_central)
+                source = secrets_to_source(bigquery_secrets(), include_central, central_codes)
                 stock = source.fetch(skus)
             else:
                 cached = st.session_state.get("stock_file")
                 if not cached:
                     raise ValueError("Sube un archivo de stock en la barra lateral.")
                 frame = excel_io.read_stock_file(cached[0], cached[1])
-                stock = ManualStockSource(frame, include_central).fetch(skus)
+                stock = ManualStockSource(
+                    frame, include_central, tuple(central_codes.split(","))
+                ).fetch(skus)
     except Exception as exc:
         st.session_state["stock_error"] = str(exc)
         st.rerun()
         return
 
     st.session_state["stock"] = stock
+    st.session_state["stock_skus"] = skus
     st.session_state.pop("result", None)
     st.rerun()
 
 
-def step_reassign(config) -> None:
+def step_reassign(config, mode: str = "") -> None:
+    bq = mode.startswith("BigQuery")
     payload = st.session_state["payload"]
     report = st.session_state["report"]
     stock = st.session_state["stock"]
     cutoff = stock_cutoff(stock)
 
-    covered = stock["sku"].nunique() if not stock.empty else 0
-    requested = len(engine.target_skus(payload.df, report.resolved, config))
+    skus = engine.target_skus(payload.df, report.resolved, config)
+    requested = len(skus)
+    cobertura = stock_coverage(stock, skus)
+    # Un SKU que vuelve con 0 unidades no es un SKU con stock: contarlo como
+    # tal hacia que el KPI dijera "402 con stock" mientras la corrida dejaba
+    # todo en SIN OPCION DE REASIGNACION.
+    covered = int((cobertura["situacion"] == "CON STOCK").sum())
+    sin_respuesta = int((cobertura["situacion"] == "SIN RESPUESTA").sum())
+    en_cero = int((cobertura["situacion"] == "EN CERO").sum())
 
     ui.section(
         "Paso 4",
@@ -388,7 +415,8 @@ def step_reassign(config) -> None:
     ui.kpi_grid(
         [
             ("SKU consultados", requested, "neutral", "Estados objetivo"),
-            ("SKU con stock", covered, "ok" if covered else "warn", f"{requested - covered} sin stock en ninguna tienda"),
+            ("SKU con stock", covered, "ok" if covered else "warn",
+             f"{sin_respuesta} sin respuesta · {en_cero} en cero"),
             ("Combinaciones SKU/tienda", len(stock), "", "Filas devueltas"),
             ("Unidades disponibles", int(stock["stock"].sum()) if not stock.empty else 0, "", "Antes de descuentos"),
             ("Fecha de corte", cutoff or "-", "neutral", "Ultimo cierre de stock"),
@@ -404,6 +432,39 @@ def step_reassign(config) -> None:
             f"Se ignoraron {descartadas:,} filas de cortes anteriores".replace(",", " "),
             f"La fuente trajo historico. Solo se usa la foto del {cutoff}, porque el stock "
             "no se acumula entre fechas.",
+        )
+
+    # --- por que un SKU no trae stock --------------------------------------
+    # Antes los dos casos se veian igual desde la app y no habia forma de
+    # saber si la fuente no conocia el SKU o si simplemente estaba en cero.
+    if sin_respuesta:
+        ui.note(
+            "warn",
+            f"{sin_respuesta} de {requested} SKU no vinieron en la consulta",
+            "La fuente no devolvio ninguna fila para esos SKU. Revisa el detalle: "
+            "si son todos, el cruce esta fallando (tabla o formato del codigo); "
+            "si son algunos, esos productos no estan en el corte.",
+        )
+
+    with st.expander(f"Detalle del stock consultado ({requested} SKU)", expanded=False):
+        filtro = st.radio(
+            "Ver",
+            ["Todos", "Sin respuesta", "En cero", "Con stock"],
+            horizontal=True,
+            key="cobertura_filtro",
+        )
+        vista = cobertura
+        if filtro != "Todos":
+            equivalencias = {
+                "Sin respuesta": "SIN RESPUESTA",
+                "En cero": "EN CERO",
+                "Con stock": "CON STOCK",
+            }
+            vista = cobertura[cobertura["situacion"] == equivalencias[filtro]]
+        st.dataframe(vista, width="stretch", hide_index=True, height=280)
+        st.caption(
+            f"{len(vista):,} de {requested:,} SKU · corte {cutoff or '-'} · "
+            f"fuente: {'BigQuery' if bq else 'archivo de stock'}.".replace(",", " ")
         )
 
     ajustes = st.columns([1.1, 1.1, 1.6])
@@ -546,6 +607,12 @@ def step_review(config) -> None:
                 "KPIs": kpis.to_frame(),
                 "Detalle": result.detail,
                 "Por tienda": result.store_summary,
+                # Que devolvio la fuente para cada SKU consultado: separa el
+                # "no vino en la consulta" del "vino en cero".
+                "Stock por SKU": stock_coverage(
+                    st.session_state["stock"],
+                    engine.target_skus(payload.df, st.session_state["report"].resolved, config),
+                ),
                 "Validacion": st.session_state["report"].to_frame(),
                 "Prioridad usada": priority_to_frame(config),
             }
@@ -640,7 +707,7 @@ def main() -> None:
     if "stock" not in st.session_state:
         return
 
-    step_reassign(config)
+    step_reassign(config, mode)
     if "result" not in st.session_state:
         return
 
