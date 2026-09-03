@@ -203,7 +203,10 @@ def _pick_store(
             candidatas.append((rule, available))
 
     if not candidatas:
-        reason = "Ninguna tienda de la lista tiene stock para este SKU."
+        reason = (
+            f"Ninguna de las {len(rules)} tiendas de la prioridad tiene stock de este SKU "
+            "en el corte consultado."
+        )
         if skipped_origin:
             reason += " Se descarto la tienda de origen."
         return None, 0, 0, reason
@@ -235,10 +238,18 @@ def _pick_store(
         rule, available = max(candidatas, key=lambda item: item[1])
         return rule, available, available, f"Solo se cubren {available} de {units} unidades."
 
-    reason = f"Ninguna tienda tiene las {units} unidades requeridas."
+    # Aqui SI habia stock, solo que ninguna tienda reunia las unidades pedidas.
+    # Informar el mejor disponible en vez de 0 es lo que permite distinguir
+    # "no hay stock en ningun lado" de "hay, pero repartido y no alcanza": con
+    # un 0 en ambos casos, desde la app las dos situaciones se ven identicas.
+    mejor_regla, mejor = max(candidatas, key=lambda item: item[1])
+    reason = (
+        f"Ninguna tienda reune las {units} unidades requeridas; la mejor es "
+        f"{mejor_regla.nom_tienda or mejor_regla.cod_tienda} con {mejor}."
+    )
     if skipped_origin:
         reason += " Se descarto la tienda de origen."
-    return None, 0, 0, reason
+    return None, mejor, 0, reason
 
 
 def reassign(
@@ -409,10 +420,12 @@ def reassign(
 
         if rule is None:
             record["Resultado"] = settings.RESULT_NO_OPTION
+            record["Stock disponible"] = available
             record["Detalle"] = reason
             kpis.sin_stock += 1
             output.at[index, output_column] = ""
             output.at[index, "Reasig_Resultado"] = settings.RESULT_NO_OPTION
+            output.at[index, "Reasig_Stock_Disponible"] = available
             output.at[index, "Reasig_Detalle"] = reason
             output.at[index, "Reasig_Fecha_Corte"] = stock_cutoff
             detail_rows.append(record)
