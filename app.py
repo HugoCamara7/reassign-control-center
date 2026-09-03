@@ -101,7 +101,7 @@ def require_login() -> bool:
 
 
 def reset_run(keep_config: bool = True) -> None:
-    for key in ("payload", "report", "stock", "stock_skus", "result", "stock_error"):
+    for key in ("payload", "report", "stock", "stock_skus", "result", "stock_error", "stock_diag"):
         st.session_state.pop(key, None)
     if not keep_config:
         st.session_state.pop("priority_bytes", None)
@@ -207,7 +207,7 @@ def step_upload() -> None:
 
     st.session_state["payload"] = payload
     st.session_state["orders_signature"] = signature
-    for key in ("report", "stock", "stock_skus", "result", "stock_error"):
+    for key in ("report", "stock", "stock_skus", "result", "stock_error", "stock_diag"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -337,7 +337,7 @@ def step_stock(config, mode: str) -> None:
     # queda corta y los SKU nuevos apareceran como "sin stock" sin haberse
     # consultado nunca. Por eso se descarta y se pide consultar de nuevo.
     if "stock" in st.session_state and st.session_state.get("stock_skus") != skus:
-        for key in ("stock", "stock_skus", "result"):
+        for key in ("stock", "stock_skus", "result", "stock_diag"):
             st.session_state.pop(key, None)
         ui.note(
             "warn",
@@ -386,8 +386,57 @@ def step_stock(config, mode: str) -> None:
 
     st.session_state["stock"] = stock
     st.session_state["stock_skus"] = skus
+    st.session_state.pop("stock_diag", None)
     st.session_state.pop("result", None)
     st.rerun()
+
+
+def render_stock_diagnosis(diag: dict) -> None:
+    """Muestra por que la consulta de stock volvio vacia."""
+    for error in diag.get("errores", []):
+        ui.note("bad", "El diagnostico no pudo completarse", error)
+
+    conclusion = diag.get("conclusion")
+    if conclusion:
+        ui.note("info", "Conclusion del diagnostico", conclusion)
+
+    if diag.get("consulta_personalizada"):
+        ui.note(
+            "warn",
+            "Hay una 'stock_query' propia en los secrets",
+            "La app esta usando esa consulta en vez de la suya, asi que la normalizacion "
+            "del SKU que trae la app no se aplica. Si el diagnostico dice que los SKU si "
+            "existen, el problema esta dentro de esa consulta: quitala de los secrets para "
+            "volver a la consulta por defecto.",
+        )
+
+    resumen = [
+        ("Tabla consultada", diag.get("tabla", "-")),
+        ("Filas que ve la cuenta", f"{diag.get('filas_tabla', '-'):,}".replace(",", " ")
+         if isinstance(diag.get("filas_tabla"), int) else "-"),
+        ("Ultimo corte de la tabla", diag.get("ultimo_corte") or "-"),
+        ("Filas en ese corte", f"{diag.get('filas_ultimo_corte', '-'):,}".replace(",", " ")
+         if isinstance(diag.get("filas_ultimo_corte"), int) else "-"),
+    ]
+    st.dataframe(
+        pd.DataFrame(resumen, columns=["Comprobacion", "Resultado"]),
+        width="stretch", hide_index=True,
+    )
+
+    muestra = diag.get("muestra")
+    if muestra is not None and not muestra.empty:
+        st.caption("Muestra real del ultimo corte. Compara 'id_producto' con el SKU del archivo:")
+        st.dataframe(muestra, width="stretch", hide_index=True)
+
+    coincidencias = diag.get("coincidencias")
+    if coincidencias is not None and not coincidencias.empty:
+        st.caption("Los SKU del archivo si aparecen en la tabla, en estos cortes:")
+        st.dataframe(coincidencias, width="stretch", hide_index=True)
+
+    columnas = diag.get("columnas")
+    if columnas is not None and not columnas.empty:
+        with st.expander("Columnas de la tabla", expanded=False):
+            st.dataframe(columnas, width="stretch", hide_index=True, height=260)
 
 
 def step_reassign(config, mode: str = "") -> None:
@@ -445,6 +494,21 @@ def step_reassign(config, mode: str = "") -> None:
             "si son todos, el cruce esta fallando (tabla o formato del codigo); "
             "si son algunos, esos productos no estan en el corte.",
         )
+
+    if bq and sin_respuesta:
+        if st.button("Diagnosticar la consulta", width="content"):
+            with st.spinner("Revisando la tabla de stock..."):
+                try:
+                    source = secrets_to_source(
+                        bigquery_secrets(),
+                        config.flag("incluir_stock_bodega_central"),
+                        config.param("codigos_bodega_central"),
+                    )
+                    st.session_state["stock_diag"] = source.diagnose(skus)
+                except Exception as exc:
+                    st.session_state["stock_diag"] = {"errores": [str(exc)]}
+        if st.session_state.get("stock_diag"):
+            render_stock_diagnosis(st.session_state["stock_diag"])
 
     with st.expander(f"Detalle del stock consultado ({requested} SKU)", expanded=False):
         filtro = st.radio(

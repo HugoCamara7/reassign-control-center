@@ -249,6 +249,32 @@ def test_stock_desactualizado():
     assert not app.exception, app.exception
 
 
+@case("Paso 4: con todo en SIN RESPUESTA se ofrece diagnosticar la consulta")
+def test_boton_diagnostico():
+    from core.stock_source import empty_stock_frame
+
+    app = AppTest.from_file(APP, default_timeout=60)
+    app.secrets["app_auth"] = {}
+    # Con credenciales declaradas la app entra en modo BigQuery, que es donde
+    # tiene sentido diagnosticar la consulta.
+    app.secrets["bigquery"] = {"project_id": "forus-demo"}
+    from core.priority import load_priority
+    from core.validation import validate
+
+    payload = pedidos()
+    app.session_state["payload"] = payload
+    app.session_state["report"] = validate(payload.df, payload.headers, load_priority())
+    app.session_state["estados_objetivo_sel"] = ["SIN_STOCK"]
+    app.session_state["stock"] = empty_stock_frame()
+    app.session_state["stock_skus"] = ["5438957", "5438958", "5438959"]
+    app.run()
+
+    cuerpo = " ".join(element.value for element in app.markdown)
+    assert "3 de 3 SKU no vinieron en la consulta" in cuerpo, cuerpo[-1200:]
+    assert "Diagnosticar la consulta" in [button.label for button in app.button]
+    assert not app.exception, app.exception
+
+
 @case("Paso 5: la reasignacion corre desde la app y deja el archivo listo")
 def test_paso_5():
     app = con_pedidos(stock_de_prueba(), ["5438957", "5438958", "5438959"])

@@ -91,6 +91,56 @@ def build_stock_query(table: str) -> str:
 # BigQuery limita el tamano de los parametros; los SKU se mandan por lotes.
 SKU_BATCH_SIZE = 5000
 
+# Consultas de diagnostico. Se ejecutan solo cuando el usuario aprieta
+# "Diagnosticar la consulta" y son estrictamente de lectura: sirven para
+# distinguir por que una consulta volvio vacia (tabla sin filas visibles, SKU
+# que no existen con ese formato, o SKU que existen pero no en el ultimo corte).
+DIAG_CORTE_QUERY = """
+SELECT
+  (SELECT CAST(MAX(fecha_corte) AS STRING) FROM `{table}`) AS ultimo_corte,
+  (SELECT COUNT(*) FROM `{table}`)                         AS filas_tabla,
+  (SELECT COUNT(*) FROM `{table}` AS s
+   WHERE s.fecha_corte = (SELECT MAX(fecha_corte) FROM `{table}`)) AS filas_ultimo_corte
+"""
+
+DIAG_MUESTRA_QUERY = """
+SELECT
+  CAST(s.id_producto AS STRING)   AS id_producto,
+  CAST(s.codigo_tienda AS STRING) AS codigo_tienda,
+  CAST(s.fecha_corte AS STRING)   AS fecha_corte
+FROM `{table}` AS s
+WHERE s.fecha_corte = (SELECT MAX(fecha_corte) FROM `{table}`)
+LIMIT 5
+"""
+
+# A proposito **sin** filtro de fecha: si el SKU existe pero solo en cortes
+# viejos, el problema es el corte y no el codigo.
+DIAG_SKU_QUERY = """
+SELECT
+  {sku_canonico}                AS sku,
+  CAST(s.fecha_corte AS STRING) AS fecha_corte,
+  COUNT(*)                      AS filas
+FROM `{table}` AS s
+WHERE {sku_canonico_where} IN UNNEST(@skus)
+GROUP BY sku, fecha_corte
+ORDER BY fecha_corte DESC
+LIMIT 20
+"""
+
+
+def sku_query_values(skus: Iterable[str]) -> list[str]:
+    """Valores que viajan en `@skus`: la forma canonica y su variante `.0`.
+
+    La consulta propia del proyecto ya compara la forma canonica, pero una
+    `stock_query` copiada de otra app puede comparar `CAST(id_producto AS
+    STRING)` en crudo. Mandar tambien `5438957.0` hace que ese caso siga
+    cruzando sin tener que editar la consulta ajena.
+    """
+    canonicos = {normalize_sku(sku) for sku in skus if normalize_sku(sku)}
+    valores = set(canonicos)
+    valores.update(f"{sku}.0" for sku in canonicos if sku.isdigit())
+    return sorted(valores)
+
 
 class StockSource(Protocol):
     name: str
@@ -255,6 +305,47 @@ def _finalize(
     return df
 
 
+def diagnose_conclusion(info: dict[str, Any]) -> str:
+    """Traduce el diagnostico a una sola frase accionable."""
+    columnas = info.get("columnas")
+    nombres = set(columnas["columna"]) if columnas is not None and not columnas.empty else set()
+    if nombres and "id_producto" not in nombres:
+        return (
+            "La tabla no tiene la columna 'id_producto'. Revisa 'stock_table' en los "
+            "secrets o define una 'stock_query' propia con las columnas correctas."
+        )
+
+    filas = info.get("filas_tabla")
+    if filas == 0:
+        return (
+            "La tabla no devuelve ninguna fila para esta cuenta. Suele ser permisos "
+            "(o una politica de acceso por fila), no la consulta."
+        )
+
+    coincidencias = info.get("coincidencias")
+    if coincidencias is None or coincidencias.empty:
+        return (
+            "Ninguno de los SKU del archivo existe en la tabla con ese codigo. Compara "
+            "la muestra de 'id_producto' con los SKU del archivo: si no se parecen, el "
+            "SKU del pedido no es el 'id_producto' del stock y hay que cruzarlos por "
+            "otro campo."
+        )
+
+    corte = as_text(info.get("ultimo_corte"))
+    cortes = {as_text(valor) for valor in coincidencias["fecha_corte"]}
+    if corte and corte not in cortes:
+        ultimo = max(cortes) if cortes else "-"
+        return (
+            f"Los SKU si existen, pero no en el ultimo corte ({corte}): el mas reciente "
+            f"que los trae es {ultimo}. El filtro de fecha los esta dejando fuera."
+        )
+
+    return (
+        "Los SKU existen en el ultimo corte y la tabla responde: el problema esta en el "
+        "resto de la consulta, no en el codigo ni en la fecha."
+    )
+
+
 @dataclass
 class BigQueryStockSource:
     """Consulta de stock contra BigQuery. Estrictamente de lectura."""
@@ -299,6 +390,88 @@ class BigQueryStockSource:
         except Exception as exc:
             return False, str(exc)
 
+    def diagnose(self, skus: Iterable[str]) -> dict[str, Any]:
+        """Averigua por que una consulta de stock volvio vacia.
+
+        Se ejecuta a pedido y es **solo lectura**. Responde tres preguntas, en
+        el orden en que conviene descartarlas:
+
+        1. La cuenta ve filas en la tabla (si no: permisos o tabla equivocada).
+        2. Que forma tiene el `id_producto` real, para compararla con el SKU
+           del archivo.
+        3. Si los SKU del archivo existen en la tabla aunque sea en un corte
+           viejo, que separa "el codigo no cruza" de "el corte los deja fuera".
+        """
+        from google.cloud import bigquery
+
+        canonicos = sorted({normalize_sku(sku) for sku in skus if normalize_sku(sku)})
+        info: dict[str, Any] = {
+            "tabla": self.table,
+            "consulta_personalizada": bool(self.custom_query.strip()),
+            "errores": [],
+        }
+
+        def _run(query: str, parametros: list[str] | None = None) -> pd.DataFrame:
+            job_config = bigquery.QueryJobConfig(
+                use_legacy_sql=False,
+                query_parameters=(
+                    [bigquery.ArrayQueryParameter("skus", "STRING", parametros)]
+                    if parametros is not None
+                    else []
+                ),
+            )
+            job = client.query(query, job_config=job_config, location=self.location or None)
+            return job.result().to_dataframe()
+
+        try:
+            client = self._client()
+        except Exception as exc:
+            info["errores"].append(f"No se pudo conectar: {exc}")
+            return info
+
+        # 0. Esquema de la tabla. Es una llamada de metadatos: no lee datos.
+        try:
+            tabla = client.get_table(self.table)
+            info["columnas"] = pd.DataFrame(
+                [{"columna": campo.name, "tipo": campo.field_type} for campo in tabla.schema]
+            )
+            info["filas_declaradas"] = int(tabla.num_rows)
+        except Exception as exc:
+            info["errores"].append(f"No se pudo leer la tabla: {exc}")
+            return info
+
+        try:
+            corte = _run(DIAG_CORTE_QUERY.format(table=self.table))
+            if not corte.empty:
+                info["ultimo_corte"] = as_text(corte.loc[0, "ultimo_corte"])
+                info["filas_tabla"] = int(corte.loc[0, "filas_tabla"])
+                info["filas_ultimo_corte"] = int(corte.loc[0, "filas_ultimo_corte"])
+        except Exception as exc:
+            info["errores"].append(f"No se pudo leer el ultimo corte: {exc}")
+
+        try:
+            info["muestra"] = _run(DIAG_MUESTRA_QUERY.format(table=self.table))
+        except Exception as exc:
+            info["errores"].append(f"No se pudo traer una muestra: {exc}")
+
+        try:
+            canonico = SKU_CANONICO_SQL.format(
+                column=SKU_LIMPIO_SQL.format(column="s.id_producto")
+            )
+            info["coincidencias"] = _run(
+                DIAG_SKU_QUERY.format(
+                    table=self.table,
+                    sku_canonico=canonico,
+                    sku_canonico_where=canonico,
+                ),
+                sku_query_values(canonicos),
+            )
+        except Exception as exc:
+            info["errores"].append(f"No se pudieron buscar los SKU: {exc}")
+
+        info["conclusion"] = diagnose_conclusion(info)
+        return info
+
     def fetch(self, skus: Iterable[str]) -> pd.DataFrame:
         from google.cloud import bigquery
 
@@ -318,8 +491,12 @@ class BigQueryStockSource:
         # Catalogo Control Center, que trae el corte completo). En ese caso se
         # ejecuta una sola vez, sin parametros, y se filtra despues en memoria.
         filters_by_sku = "@skus" in query
+        parametros = sku_query_values(unique)
         batches = (
-            [unique[start : start + SKU_BATCH_SIZE] for start in range(0, len(unique), SKU_BATCH_SIZE)]
+            [
+                parametros[start : start + SKU_BATCH_SIZE]
+                for start in range(0, len(parametros), SKU_BATCH_SIZE)
+            ]
             if filters_by_sku
             else [None]
         )

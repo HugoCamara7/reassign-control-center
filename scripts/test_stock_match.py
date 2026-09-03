@@ -24,12 +24,19 @@ import pandas as pd
 from config import settings
 from core.excel_io import normalize_sku
 from core.stock_source import (
+    DIAG_CORTE_QUERY,
+    DIAG_MUESTRA_QUERY,
+    DIAG_SKU_QUERY,
     ManualStockSource,
+    SKU_CANONICO_SQL,
+    SKU_LIMPIO_SQL,
     STOCK_QUERY,
     build_stock_index,
     build_stock_query,
     central_warehouse_codes,
     consolidate,
+    diagnose_conclusion,
+    sku_query_values,
     stock_coverage,
     stock_cutoff,
 )
@@ -184,7 +191,96 @@ def test_negativos():
     assert build_stock_index(stock) == {("A", "59"): 2}, stock.to_dict("records")
 
 
-# --- 3. Que se ve cuando un SKU no trae stock -------------------------------
+@case("Parametro @skus: viaja la forma canonica y tambien la variante `.0`")
+def test_variantes_del_parametro():
+    # Una `stock_query` copiada de otra app puede comparar
+    # `CAST(id_producto AS STRING)` en crudo: si el campo es FLOAT, la tabla
+    # dice `5438957.0`. Mandando las dos formas, esa consulta ajena cruza igual.
+    valores = sku_query_values(["0005438957", "0A12"])
+    assert valores == ["0A12", "5438957", "5438957.0"], valores
+
+
+@case("Parametro @skus: sin SKU utilizables no se manda nada")
+def test_variantes_vacias():
+    assert sku_query_values(["", None, "  "]) == []
+
+
+# --- 3. Diagnostico de una consulta que vuelve vacia ------------------------
+@case("Diagnostico: las consultas se formatean y son de solo lectura")
+def test_consultas_de_diagnostico():
+    canonico = SKU_CANONICO_SQL.format(column=SKU_LIMPIO_SQL.format(column="s.id_producto"))
+    consultas = [
+        DIAG_CORTE_QUERY.format(table=settings.DEFAULT_STOCK_TABLE),
+        DIAG_MUESTRA_QUERY.format(table=settings.DEFAULT_STOCK_TABLE),
+        DIAG_SKU_QUERY.format(
+            table=settings.DEFAULT_STOCK_TABLE,
+            sku_canonico=canonico,
+            sku_canonico_where=canonico,
+        ),
+    ]
+    for consulta in consultas:
+        assert "{" not in consulta, consulta
+        for palabra in ("INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "DROP", "TRUNCATE"):
+            assert palabra not in consulta.upper(), (palabra, consulta)
+    # La busqueda de SKU va a proposito sin filtro de fecha: separa "el codigo
+    # no cruza" de "el corte los deja fuera".
+    assert "MAX(fecha_corte)" not in consultas[2]
+
+
+@case("Diagnostico: una tabla sin la columna id_producto se nombra como tal")
+def test_conclusion_sin_columna():
+    info = {"columnas": pd.DataFrame([{"columna": "codint_ma", "tipo": "STRING"}])}
+    assert "no tiene la columna 'id_producto'" in diagnose_conclusion(info)
+
+
+@case("Diagnostico: una tabla sin filas visibles apunta a permisos")
+def test_conclusion_sin_filas():
+    info = {
+        "columnas": pd.DataFrame([{"columna": "id_producto", "tipo": "INTEGER"}]),
+        "filas_tabla": 0,
+    }
+    assert "permisos" in diagnose_conclusion(info)
+
+
+@case("Diagnostico: si ningun SKU existe, el problema es el codigo")
+def test_conclusion_sin_coincidencias():
+    info = {
+        "columnas": pd.DataFrame([{"columna": "id_producto", "tipo": "INTEGER"}]),
+        "filas_tabla": 1000,
+        "coincidencias": pd.DataFrame(),
+    }
+    assert "Ninguno de los SKU" in diagnose_conclusion(info)
+
+
+@case("Diagnostico: si existen pero en un corte viejo, el problema es la fecha")
+def test_conclusion_corte_viejo():
+    info = {
+        "columnas": pd.DataFrame([{"columna": "id_producto", "tipo": "INTEGER"}]),
+        "filas_tabla": 1000,
+        "ultimo_corte": "2026-09-02",
+        "coincidencias": pd.DataFrame(
+            [{"sku": "5438957", "fecha_corte": "2026-08-20", "filas": 3}]
+        ),
+    }
+    conclusion = diagnose_conclusion(info)
+    assert "no en el ultimo corte" in conclusion, conclusion
+    assert "2026-08-20" in conclusion, conclusion
+
+
+@case("Diagnostico: si estan en el ultimo corte, el problema es la consulta")
+def test_conclusion_todo_bien():
+    info = {
+        "columnas": pd.DataFrame([{"columna": "id_producto", "tipo": "INTEGER"}]),
+        "filas_tabla": 1000,
+        "ultimo_corte": "2026-09-02",
+        "coincidencias": pd.DataFrame(
+            [{"sku": "5438957", "fecha_corte": "2026-09-02", "filas": 3}]
+        ),
+    }
+    assert "el resto de la consulta" in diagnose_conclusion(info)
+
+
+# --- 4. Que se ve cuando un SKU no trae stock -------------------------------
 @case("Cobertura: se distingue 'no vino en la consulta' de 'vino en cero'")
 def test_cobertura():
     stock = ManualStockSource(

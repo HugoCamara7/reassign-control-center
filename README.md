@@ -243,8 +243,8 @@ scripts/
   test_rules.py                 29 pruebas de reglas de negocio
   test_stock_ledger.py          11 pruebas del descuento temporal de stock
   test_stock_cutoff.py          10 pruebas del filtro por fecha de corte
-  test_stock_match.py           16 pruebas del cruce SKU <-> stock
-  test_app_flow.py              15 pruebas de la app (acceso, flujo, pasos 3-5)
+  test_stock_match.py           24 pruebas del cruce SKU <-> stock
+  test_app_flow.py              16 pruebas de la app (acceso, flujo, pasos 3-5)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
 docs/
@@ -293,18 +293,19 @@ filtro de fecha.
 python -m scripts.test_stock_match
 ```
 
-16 casos sobre el cruce entre el SKU del pedido y el stock, que es donde un
+24 casos sobre el cruce entre el SKU del pedido y el stock, que es donde un
 "sin stock" puede ser en realidad un codigo que no cruza: ceros a la izquierda
 en cualquiera de los dos lados, el `.0` de un campo numerico, codigos
 alfanumericos que **si** conservan su cero, filas repetidas del mismo par
-(SKU, tienda) que deben sumarse, bodegas centrales, y el detalle que separa
-"no vino en la consulta" de "vino en cero".
+(SKU, tienda) que deben sumarse, bodegas centrales, el detalle que separa
+"no vino en la consulta" de "vino en cero", y el diagnostico que se ofrece
+cuando la consulta vuelve vacia.
 
 ```bash
 python -m scripts.test_app_flow
 ```
 
-15 casos sobre la aplicacion con `streamlit.testing.AppTest`: pantalla de acceso,
+16 casos sobre la aplicacion con `streamlit.testing.AppTest`: pantalla de acceso,
 credenciales correctas e incorrectas, normalizacion del correo, cierre de sesion,
 arranque del flujo, los KPI del paso 4, el detalle de stock por SKU, el descarte
 de una consulta de stock que ya no corresponde y la corrida completa hasta el
