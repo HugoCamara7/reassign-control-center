@@ -1,12 +1,26 @@
 Archivos a actualizar en HugoCamara7/reassign-control-center (rama main)
 
-NUEVO       scripts/test_stock_cutoff.py
-MODIFICADO  .gitignore
-MODIFICADO  README.md
-MODIFICADO  app.py
-MODIFICADO  core/stock_source.py
+Arreglo del stock que no llegaba: la app devolvia cero unidades para todos
+los SKU. El corte se elegia por INSTANTE y no por dia, asi que cada tienda
+sellada un minuto antes desaparecia del stock disponible.
 
---- BORRAR del repo (ya no existen en el proyecto) ---
+MODIFICADO  core/stock_source.py     corte por dia + consulta BigQuery robusta
+MODIFICADO  app.py                   panel "Diagnosticar fuente de stock"
+MODIFICADO  scripts/test_stock_cutoff.py   15 casos (5 nuevos de regresion)
+MODIFICADO  README.md                seccion "Cuando la app no trae stock"
+
+Son 4 archivos, todos MODIFICADOS: ninguno es nuevo y no se borra nada
+nuevo. Descomprimir sobre la raiz del repo, respetando las carpetas.
+
+Para comprobar que quedo bien, despues de subirlos:
+
+    python -m scripts.test_stock_cutoff     15/15
+    python -m scripts.test_rules            29/29
+    python -m scripts.test_stock_ledger     11/11
+    python -m scripts.test_secrets_compat   11/11
+    python -m scripts.test_app_flow         10/10
+
+--- BORRAR del repo (sigue pendiente, no cambio) ---
 BORRAR      .streamlit/config
 BORRAR      _QUE_ACTUALIZAR.txt
 BORRAR      assets/aas
@@ -16,5 +30,3 @@ BORRAR      config/prioridad_tiendas.ejemplo.xlsx
 BORRAR      core/core
 BORRAR      docs/eee
 BORRAR      download
-
-Descomprimir sobre la raiz del repo, respetando las carpetas.
