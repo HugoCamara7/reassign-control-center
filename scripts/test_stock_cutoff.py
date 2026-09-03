@@ -17,9 +17,9 @@ import sys
 import pandas as pd
 
 from core.stock_source import (
-    STOCK_QUERY,
     ManualStockSource,
     _finalize,
+    build_stock_query,
     keep_latest_cutoff,
     latest_cutoff_value,
 )
@@ -235,15 +235,19 @@ def test_filas_crudas():
     assert vacio.empty and vacio.attrs["filas_crudas"] == 0
 
 
-@case("La consulta de BigQuery compara SKU normalizados y corte por dia")
-def test_consulta_normaliza():
-    # `CAST(x AS STRING)` de un FLOAT64 da '5438957.0' y no coincide con el SKU
-    # del pedido: sin normalizar, la consulta no devuelve NINGUNA fila.
-    assert "REGEXP_REPLACE(CAST(s.id_producto AS STRING)" in STOCK_QUERY
-    assert "n.sku IN UNNEST(@skus)" in STOCK_QUERY
-    # El corte se une por dia, no por instante.
-    assert "n.dia_corte = u.dia_corte" in STOCK_QUERY
-    assert "AS DATE)" in STOCK_QUERY
+@case("La consulta de BigQuery une el corte por dia y castea las unidades")
+def test_consulta_por_dia():
+    consulta = build_stock_query("proyecto.dataset.tabla")
+    # El corte se une por dia, no por instante: `MAX(fecha_corte)` de un
+    # TIMESTAMP es un instante y se llevaria casi toda la foto por delante.
+    assert "c.dia_corte = u.dia_corte" in consulta, consulta
+    assert "MAX(dia_corte)" in consulta, consulta
+    assert "AS DATE)" in consulta, consulta
+    # Un CAST directo de '3.0' a INT64 falla en BigQuery y tumba la consulta.
+    assert "SAFE_CAST(CAST(s.stock_tiendas AS STRING) AS FLOAT64)" in consulta, consulta
+    # La canonizacion del SKU (de main) sigue en pie en los dos lados.
+    assert "sku IN UNNEST(@skus)" in consulta, consulta
+    assert "REGEXP_REPLACE(UPPER(TRIM(CAST(s.id_producto AS STRING)))" in consulta, consulta
 
 
 def main() -> int:

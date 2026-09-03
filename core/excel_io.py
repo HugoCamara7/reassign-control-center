@@ -31,6 +31,9 @@ SAFE_INT_LIMIT = 10**15
 
 _SCIENTIFIC = re.compile(r"^[+-]?\d+(\.\d+)?[eE][+-]?\d+$")
 
+# `5438957.0` / `5438957.00` -> `5438957`. Un decimal real (`1.5`) no se toca.
+_TRAILING_ZERO_DECIMALS = re.compile(r"\.0+$")
+
 
 @dataclass
 class WorkbookPayload:
@@ -100,11 +103,22 @@ def as_text(value: Any) -> str:
 
 
 def normalize_sku(value: Any) -> str:
-    """SKU canonico: solo digitos/alfanumericos, sin `.0` de sobra."""
-    text = as_text(value).upper()
-    if text.endswith(".0"):
-        text = text[:-2]
-    return text.strip()
+    """SKU canonico: mayusculas, sin `.0` de sobra y sin ceros a la izquierda.
+
+    Los ceros importan. El archivo de pedidos suele traer el SKU como texto
+    (`0005438957`) mientras BigQuery lo guarda como numero (`5438957`): si cada
+    lado conserva su forma el cruce falla y la app informa "sin stock" para un
+    producto que si lo tiene. Solo se recortan los ceros de un codigo
+    completamente numerico; `0A12` se deja intacto porque ahi el cero puede ser
+    parte del codigo.
+
+    La misma transformacion se aplica dentro de la consulta a BigQuery
+    (`SKU_SQL_EXPR`), para que ambos lados comparen exactamente lo mismo.
+    """
+    text = _TRAILING_ZERO_DECIMALS.sub("", as_text(value).upper()).strip()
+    if text.isdigit():
+        text = text.lstrip("0") or "0"
+    return text
 
 
 def normalize_store_code(value: Any) -> str:
