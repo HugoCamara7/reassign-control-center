@@ -23,22 +23,24 @@ from core.excel_io import as_text, normalize_sku, normalize_store_code, to_int
 
 STOCK_COLUMNS = ["sku", "cod_tienda", "stock_tiendas", "stock_bodega", "stock", "fecha_corte"]
 
-# --- Canonizacion del SKU dentro de BigQuery --------------------------------
-# `SKU_LIMPIO_SQL` y `SKU_CANONICO_SQL` replican paso a paso lo que hace
-# `core.excel_io.normalize_sku` del lado del archivo de pedidos: recortar el
-# `.0` que deja un campo numerico, pasar a mayusculas, y quitar los ceros a la
-# izquierda **solo** cuando el codigo es todo digitos.
+# --- Como se cruza el SKU con BigQuery --------------------------------------
+# El cruce se hace por **dos comparaciones independientes**, y basta que una
+# acierte. Se prefiere esto a una sola expresion "inteligente": una consulta que
+# no se puede ejecutar desde las pruebas no debe ser el unico camino al stock.
 #
-# Sin esto el filtro `IN UNNEST(@skus)` compara la forma cruda de la tabla
-# (`5438957.0` si `id_producto` es FLOAT, `0005438957` si es texto) contra el
-# SKU ya normalizado del Excel: no devuelve ninguna fila y la app termina
-# informando "sin stock" para productos que si lo tienen.
-SKU_LIMPIO_SQL = "REGEXP_REPLACE(UPPER(TRIM(CAST({column} AS STRING))), r'[.]0+$', '')"
-SKU_CANONICO_SQL = (
-    "IF(REGEXP_CONTAINS({column}, r'^[0-9]+$'), "
-    "IFNULL(REGEXP_EXTRACT({column}, r'^0*([0-9]+?)$'), {column}), "
-    "{column})"
-)
+# 1. `CAST(id_producto AS STRING) IN UNNEST(@skus)` — la comparacion de
+#    siempre. En `@skus` viaja la forma canonica del SKU y tambien su variante
+#    `.0`, para un campo numerico guardado como texto (`5438957.0`).
+# 2. `SAFE_CAST(id_producto AS INT64) IN UNNEST(@skus_num)` — comparacion
+#    numerica, que resuelve sin regex los ceros a la izquierda (`0005438957`) y
+#    los campos FLOAT/NUMERIC. `SAFE_CAST` devuelve NULL en vez de fallar
+#    cuando el codigo no es numerico.
+#
+# La columna `sku` se devuelve **cruda**: la forma canonica la calcula
+# `normalize_sku` en Python, que si esta cubierta por pruebas. Si dos codigos
+# crudos distintos canonizan al mismo SKU, `consolidate()` los suma.
+SKU_WHERE_SQL = """CAST(s.id_producto AS STRING) IN UNNEST(@skus)
+     OR SAFE_CAST(s.id_producto AS INT64) IN UNNEST(@skus_num)"""
 
 # Consulta parametrizada. Se filtra por SKU para no traer la tabla completa y
 # se toma unicamente la ultima `fecha_corte` disponible.
@@ -46,46 +48,24 @@ STOCK_QUERY = """
 WITH ultimo_corte AS (
   SELECT MAX(fecha_corte) AS fecha_corte
   FROM `{table}`
-),
-corte_vigente AS (
-  SELECT
-    {sku_limpio}                                AS sku_limpio,
-    CAST(s.codigo_tienda AS STRING)             AS cod_tienda,
-    COALESCE(CAST(s.stock_tiendas AS INT64), 0) AS stock_tiendas,
-    COALESCE(CAST(s.stock_bodega  AS INT64), 0) AS stock_bodega,
-    CAST(s.fecha_corte AS STRING)               AS fecha_corte
-  FROM `{table}` AS s
-  JOIN ultimo_corte AS u
-    ON s.fecha_corte = u.fecha_corte
-),
-stock_vigente AS (
-  SELECT
-    {sku_canonico} AS sku,
-    cod_tienda,
-    stock_tiendas,
-    stock_bodega,
-    fecha_corte
-  FROM corte_vigente
 )
 SELECT
-  sku,
-  cod_tienda,
-  SUM(stock_tiendas) AS stock_tiendas,
-  SUM(stock_bodega)  AS stock_bodega,
-  MAX(fecha_corte)   AS fecha_corte
-FROM stock_vigente
-WHERE sku IN UNNEST(@skus)
+  CAST(s.id_producto AS STRING)                    AS sku,
+  CAST(s.codigo_tienda AS STRING)                  AS cod_tienda,
+  SUM(COALESCE(CAST(s.stock_tiendas AS INT64), 0)) AS stock_tiendas,
+  SUM(COALESCE(CAST(s.stock_bodega  AS INT64), 0)) AS stock_bodega,
+  CAST(MAX(s.fecha_corte) AS STRING)               AS fecha_corte
+FROM `{table}` AS s
+JOIN ultimo_corte AS u
+  ON s.fecha_corte = u.fecha_corte
+WHERE {sku_where}
 GROUP BY sku, cod_tienda
 """
 
 
 def build_stock_query(table: str) -> str:
     """Consulta por defecto, ya formateada para una tabla concreta."""
-    return STOCK_QUERY.format(
-        table=table,
-        sku_limpio=SKU_LIMPIO_SQL.format(column="s.id_producto"),
-        sku_canonico=SKU_CANONICO_SQL.format(column="sku_limpio"),
-    )
+    return STOCK_QUERY.format(table=table, sku_where=SKU_WHERE_SQL)
 
 
 # BigQuery limita el tamano de los parametros; los SKU se mandan por lotes.
@@ -117,11 +97,11 @@ LIMIT 5
 # viejos, el problema es el corte y no el codigo.
 DIAG_SKU_QUERY = """
 SELECT
-  {sku_canonico}                AS sku,
-  CAST(s.fecha_corte AS STRING) AS fecha_corte,
-  COUNT(*)                      AS filas
+  CAST(s.id_producto AS STRING)  AS sku,
+  CAST(s.fecha_corte AS STRING)  AS fecha_corte,
+  COUNT(*)                       AS filas
 FROM `{table}` AS s
-WHERE {sku_canonico_where} IN UNNEST(@skus)
+WHERE {sku_where}
 GROUP BY sku, fecha_corte
 ORDER BY fecha_corte DESC
 LIMIT 20
@@ -129,17 +109,32 @@ LIMIT 20
 
 
 def sku_query_values(skus: Iterable[str]) -> list[str]:
-    """Valores que viajan en `@skus`: la forma canonica y su variante `.0`.
+    """Valores de `@skus`: la forma canonica del SKU y su variante `.0`.
 
-    La consulta propia del proyecto ya compara la forma canonica, pero una
-    `stock_query` copiada de otra app puede comparar `CAST(id_producto AS
-    STRING)` en crudo. Mandar tambien `5438957.0` hace que ese caso siga
-    cruzando sin tener que editar la consulta ajena.
+    La variante cubre el campo numerico guardado como texto (`5438957.0`), que
+    de otro modo no cruzaria con la comparacion de texto.
     """
     canonicos = {normalize_sku(sku) for sku in skus if normalize_sku(sku)}
     valores = set(canonicos)
     valores.update(f"{sku}.0" for sku in canonicos if sku.isdigit())
     return sorted(valores)
+
+
+def sku_numeric_values(skus: Iterable[str]) -> list[int]:
+    """Valores de `@skus_num`: los SKU que son un numero entero.
+
+    Es la comparacion que resuelve los ceros a la izquierda y los campos
+    FLOAT sin depender de expresiones regulares dentro de la consulta.
+    """
+    numeros = set()
+    for sku in skus:
+        canonico = normalize_sku(sku)
+        if canonico.isdigit():
+            numero = int(canonico)
+            # Fuera del rango de INT64 la comparacion no tiene sentido.
+            if numero < 2**63:
+                numeros.add(numero)
+    return sorted(numeros)
 
 
 class StockSource(Protocol):
@@ -411,14 +406,15 @@ class BigQueryStockSource:
             "errores": [],
         }
 
-        def _run(query: str, parametros: list[str] | None = None) -> pd.DataFrame:
+        def _run(query: str, skus_pedidos: list[str] | None = None) -> pd.DataFrame:
+            parametros = []
+            if skus_pedidos is not None:
+                parametros = [
+                    bigquery.ArrayQueryParameter("skus", "STRING", sku_query_values(skus_pedidos)),
+                    bigquery.ArrayQueryParameter("skus_num", "INT64", sku_numeric_values(skus_pedidos)),
+                ]
             job_config = bigquery.QueryJobConfig(
-                use_legacy_sql=False,
-                query_parameters=(
-                    [bigquery.ArrayQueryParameter("skus", "STRING", parametros)]
-                    if parametros is not None
-                    else []
-                ),
+                use_legacy_sql=False, query_parameters=parametros
             )
             job = client.query(query, job_config=job_config, location=self.location or None)
             return job.result().to_dataframe()
@@ -455,16 +451,9 @@ class BigQueryStockSource:
             info["errores"].append(f"No se pudo traer una muestra: {exc}")
 
         try:
-            canonico = SKU_CANONICO_SQL.format(
-                column=SKU_LIMPIO_SQL.format(column="s.id_producto")
-            )
             info["coincidencias"] = _run(
-                DIAG_SKU_QUERY.format(
-                    table=self.table,
-                    sku_canonico=canonico,
-                    sku_canonico_where=canonico,
-                ),
-                sku_query_values(canonicos),
+                DIAG_SKU_QUERY.format(table=self.table, sku_where=SKU_WHERE_SQL),
+                canonicos,
             )
         except Exception as exc:
             info["errores"].append(f"No se pudieron buscar los SKU: {exc}")
@@ -491,31 +480,41 @@ class BigQueryStockSource:
         # Catalogo Control Center, que trae el corte completo). En ese caso se
         # ejecuta una sola vez, sin parametros, y se filtra despues en memoria.
         filters_by_sku = "@skus" in query
-        parametros = sku_query_values(unique)
+        usa_numericos = "@skus_num" in query
         batches = (
-            [
-                parametros[start : start + SKU_BATCH_SIZE]
-                for start in range(0, len(parametros), SKU_BATCH_SIZE)
-            ]
+            [unique[start : start + SKU_BATCH_SIZE] for start in range(0, len(unique), SKU_BATCH_SIZE)]
             if filters_by_sku
             else [None]
         )
 
         frames: list[pd.DataFrame] = []
         for batch in batches:
+            parametros = []
+            if batch is not None:
+                parametros.append(
+                    bigquery.ArrayQueryParameter("skus", "STRING", sku_query_values(batch))
+                )
+                # Solo si la consulta lo usa: una `stock_query` propia no
+                # conoce este parametro y BigQuery no debe recibirlo de mas.
+                if usa_numericos:
+                    parametros.append(
+                        bigquery.ArrayQueryParameter("skus_num", "INT64", sku_numeric_values(batch))
+                    )
             job_config = bigquery.QueryJobConfig(
-                use_legacy_sql=False,
-                query_parameters=(
-                    [bigquery.ArrayQueryParameter("skus", "STRING", batch)] if batch is not None else []
-                ),
+                use_legacy_sql=False, query_parameters=parametros
             )
             job = client.query(query, job_config=job_config, location=self.location or None)
             frames.append(job.result().to_dataframe())
 
         combined = pd.concat(frames, ignore_index=True) if frames else empty_stock_frame()
+        filas_crudas = len(combined)
         result = _finalize(combined, self.include_central_warehouse, self.central_codes or None)
         if not filters_by_sku and not result.empty:
             result = result[result["sku"].isin(unique)].reset_index(drop=True)
+        # Para el diagnostico: cuantas filas devolvio la consulta antes de
+        # normalizar, y con que consulta se pidieron.
+        result.attrs["filas_crudas"] = filas_crudas
+        result.attrs["consulta"] = query
         return result
 
 

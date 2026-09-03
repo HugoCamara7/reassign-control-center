@@ -24,9 +24,12 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
    `SIN_DESPACHO`, pero sirve cualquiera (`PENDIENTE_ASIGNACION`, etc.).
    Tolera `sin stock`, `Sin-Stock`, `SIN_STOCK` como el mismo estado.
 3. Toma el SKU de cada pedido y consulta el stock por tienda en BigQuery.
-   **El SKU se canoniza en los dos lados** (archivo y consulta): `0005438957`,
-   `5438957.0` y `5438957` son el mismo producto, asi que un campo numerico o
-   unos ceros a la izquierda no dejan al pedido sin stock.
+   El cruce se hace por **dos comparaciones alternativas** (texto y numerica),
+   y basta que una acierte: `0005438957`, `5438957.0` y `5438957` son el mismo
+   producto, asi que un campo numerico o unos ceros a la izquierda no dejan al
+   pedido sin stock. La forma canonica del SKU la calcula Python, no la
+   consulta: el SQL que no se puede ejecutar desde las pruebas nunca es el
+   unico camino al stock.
    **Solo entra el ultimo corte**: el stock es una foto, no un acumulado. Si la
    fuente trae historico, los cortes anteriores se descartan y la app informa
    cuantas filas dejo fuera. Las filas repetidas de un mismo par (SKU, tienda)
@@ -243,7 +246,8 @@ scripts/
   test_rules.py                 29 pruebas de reglas de negocio
   test_stock_ledger.py          11 pruebas del descuento temporal de stock
   test_stock_cutoff.py          10 pruebas del filtro por fecha de corte
-  test_stock_match.py           24 pruebas del cruce SKU <-> stock
+  test_stock_match.py           26 pruebas del cruce SKU <-> stock
+  test_stock_query.py           12 pruebas de la consulta a BigQuery (cliente simulado)
   test_app_flow.py              16 pruebas de la app (acceso, flujo, pasos 3-5)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
@@ -300,6 +304,17 @@ alfanumericos que **si** conservan su cero, filas repetidas del mismo par
 (SKU, tienda) que deben sumarse, bodegas centrales, el detalle que separa
 "no vino en la consulta" de "vino en cero", y el diagnostico que se ofrece
 cuando la consulta vuelve vacia.
+
+```bash
+python -m scripts.test_stock_query
+```
+
+12 casos sobre la consulta a BigQuery con un **cliente simulado**: se emula la
+semantica del `WHERE` sobre una tabla en memoria con los formatos reales de
+`id_producto` (entero, texto con ceros, campo numerico como texto), y se fija
+que parametros se mandan y que llega de vuelta. La consulta real no se puede
+ejecutar sin un proyecto; por eso el cruce no depende de expresiones regulares
+y conserva la comparacion de texto que ya funcionaba.
 
 ```bash
 python -m scripts.test_app_flow

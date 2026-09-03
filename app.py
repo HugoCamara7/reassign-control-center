@@ -526,9 +526,13 @@ def step_reassign(config, mode: str = "") -> None:
             }
             vista = cobertura[cobertura["situacion"] == equivalencias[filtro]]
         st.dataframe(vista, width="stretch", hide_index=True, height=280)
+        crudas = stock.attrs.get("filas_crudas")
+        detalle_crudas = (
+            f" · la consulta devolvio {crudas} filas" if isinstance(crudas, int) else ""
+        )
         st.caption(
             f"{len(vista):,} de {requested:,} SKU · corte {cutoff or '-'} · "
-            f"fuente: {'BigQuery' if bq else 'archivo de stock'}.".replace(",", " ")
+            f"fuente: {'BigQuery' if bq else 'archivo de stock'}{detalle_crudas}.".replace(",", " ")
         )
 
     ajustes = st.columns([1.1, 1.1, 1.6])

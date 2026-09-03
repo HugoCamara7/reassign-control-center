@@ -28,14 +28,14 @@ from core.stock_source import (
     DIAG_MUESTRA_QUERY,
     DIAG_SKU_QUERY,
     ManualStockSource,
-    SKU_CANONICO_SQL,
-    SKU_LIMPIO_SQL,
+    SKU_WHERE_SQL,
     STOCK_QUERY,
     build_stock_index,
     build_stock_query,
     central_warehouse_codes,
     consolidate,
     diagnose_conclusion,
+    sku_numeric_values,
     sku_query_values,
     stock_coverage,
     stock_cutoff,
@@ -102,15 +102,36 @@ def test_idempotente():
         assert normalize_sku(una) == una, (value, una)
 
 
-@case("BigQuery: la consulta normaliza el SKU del mismo modo que la app")
-def test_consulta_normaliza_en_sql():
+@case("BigQuery: se conserva la comparacion de texto que siempre funciono")
+def test_consulta_conserva_la_comparacion_original():
+    # Esta linea es la que traia el stock antes de tocar nada. No se reemplaza
+    # por ninguna expresion mas lista: se le SUMA una segunda comparacion.
     query = build_stock_query(settings.DEFAULT_STOCK_TABLE)
     assert settings.DEFAULT_STOCK_TABLE in query
     assert "{" not in query, "quedaron marcadores sin reemplazar en la consulta"
-    # El filtro compara la forma canonica, no `CAST(id_producto AS STRING)` a secas.
-    assert "WHERE sku IN UNNEST(@skus)" in query
-    for pieza in ("UPPER(TRIM(CAST(s.id_producto AS STRING)))", "[.]0+$", "^0*([0-9]+?)$"):
-        assert pieza in query, pieza
+    assert "CAST(s.id_producto AS STRING) IN UNNEST(@skus)" in query
+    assert "CAST(s.id_producto AS STRING)                    AS sku" in query, (
+        "el SKU se devuelve crudo: la forma canonica la calcula normalize_sku"
+    )
+
+
+@case("BigQuery: la comparacion numerica cubre ceros y campos FLOAT sin regex")
+def test_consulta_compara_numerico():
+    query = build_stock_query(settings.DEFAULT_STOCK_TABLE)
+    assert "SAFE_CAST(s.id_producto AS INT64) IN UNNEST(@skus_num)" in query
+    # Las dos comparaciones son alternativas: basta que una acierte.
+    assert " OR " in SKU_WHERE_SQL
+    # Sin expresiones regulares en el cruce: no se puede probar SQL desde aqui.
+    for pieza in ("REGEXP_EXTRACT", "REGEXP_CONTAINS", "REGEXP_REPLACE"):
+        assert pieza not in query, pieza
+
+
+@case("Parametro @skus_num: los SKU numericos viajan como enteros")
+def test_parametro_numerico():
+    # `0005438957` y `5438957.0` son el mismo numero: asi cruzan aunque la
+    # tabla los guarde con ceros a la izquierda o como FLOAT.
+    assert sku_numeric_values(["0005438957", "5438957.0", "0A12"]) == [5438957]
+    assert sku_numeric_values(["0A12", ""]) == []
 
 
 @case("BigQuery: la consulta sigue siendo de solo lectura")
@@ -208,15 +229,10 @@ def test_variantes_vacias():
 # --- 3. Diagnostico de una consulta que vuelve vacia ------------------------
 @case("Diagnostico: las consultas se formatean y son de solo lectura")
 def test_consultas_de_diagnostico():
-    canonico = SKU_CANONICO_SQL.format(column=SKU_LIMPIO_SQL.format(column="s.id_producto"))
     consultas = [
         DIAG_CORTE_QUERY.format(table=settings.DEFAULT_STOCK_TABLE),
         DIAG_MUESTRA_QUERY.format(table=settings.DEFAULT_STOCK_TABLE),
-        DIAG_SKU_QUERY.format(
-            table=settings.DEFAULT_STOCK_TABLE,
-            sku_canonico=canonico,
-            sku_canonico_where=canonico,
-        ),
+        DIAG_SKU_QUERY.format(table=settings.DEFAULT_STOCK_TABLE, sku_where=SKU_WHERE_SQL),
     ]
     for consulta in consultas:
         assert "{" not in consulta, consulta
