@@ -343,6 +343,7 @@ def step_stock(config, mode: str) -> None:
 
     columns = st.columns([1, 1, 2])
     launch = columns[0].button("Consultar stock", type="primary", width="stretch")
+    render_stock_diagnosis(skus, mode)
 
     if not launch:
         return
@@ -371,6 +372,90 @@ def step_stock(config, mode: str) -> None:
     st.rerun()
 
 
+def render_stock_diagnosis(skus: list[str], mode: str) -> None:
+    """Explica por que la consulta no trajo stock, en vez de mostrar ceros.
+
+    "Cero unidades" se ve igual con la tabla vacia, con un corte nuevo sin
+    filas, con SKU que no existen o —lo mas traicionero— con un `id_producto`
+    numerico cuyo texto (`5438957.0`) no coincide con el SKU del pedido
+    (`5438957`). Sin estos contadores no hay forma de distinguirlos desde la
+    interfaz.
+    """
+    stock = st.session_state.get("stock")
+    if stock is None or not stock.empty:
+        return
+
+    crudas = int(stock.attrs.get("filas_crudas", 0))
+    ui.note(
+        "warn",
+        "La fuente no devolvio stock para ningun SKU",
+        f"Se consultaron {len(skus):,} SKU y la consulta devolvio {crudas:,} filas. "
+        "Revisa el diagnostico para ver en que paso se pierden.".replace(",", " "),
+    )
+    if not mode.startswith("BigQuery"):
+        return
+    if not st.button("Diagnosticar fuente de stock"):
+        return
+
+    try:
+        with st.spinner("Revisando la tabla de stock..."):
+            datos = secrets_to_source(bigquery_secrets(), True).diagnose(skus)
+    except Exception as exc:
+        ui.note("bad", "No se pudo diagnosticar", str(exc))
+        return
+
+    ui.kpi_grid(
+        [
+            ("Filas en la tabla", datos.get("filas_tabla", 0), "neutral", datos.get("tabla", "")),
+            ("Ultimo corte", datos.get("ultimo_corte") or "-", "neutral", "MAX(fecha_corte)"),
+            ("Filas del ultimo corte", datos.get("filas_ultimo_corte", 0),
+             "ok" if datos.get("filas_ultimo_corte") else "bad", "Si es 0, el corte esta vacio"),
+            ("SKU hallados en la tabla", datos.get("skus_en_tabla", 0),
+             "ok" if datos.get("skus_en_tabla") else "bad",
+             f"de {datos.get('skus_consultados', 0)} consultados"),
+            ("SKU en el ultimo corte", datos.get("skus_en_ultimo_corte", 0),
+             "ok" if datos.get("skus_en_ultimo_corte") else "warn", "Los que si tendrian stock"),
+        ]
+    )
+
+    if not datos.get("filas_tabla"):
+        ui.note("bad", "La tabla de stock esta vacia",
+                f"{datos.get('tabla', '')} no tiene filas. Es un problema del origen, no de la app.")
+    elif not datos.get("filas_ultimo_corte"):
+        ui.note("bad", "El ultimo corte no tiene filas",
+                "La fecha de corte mas reciente existe pero llego sin datos: probablemente "
+                "una carga a medio terminar en el datalake.")
+    elif not datos.get("skus_en_tabla"):
+        ui.note(
+            "bad",
+            "Ningun SKU del archivo existe en la tabla de stock",
+            "Los SKU se comparan como texto normalizado. Si la tabla los guarda con otro "
+            "formato (prefijo, ceros a la izquierda, otro maestro), no hay coincidencia posible.",
+        )
+    elif not datos.get("skus_en_ultimo_corte"):
+        ui.note(
+            "warn",
+            "Los SKU existen, pero no en el ultimo corte",
+            f"Estan en cortes anteriores. El corte vigente ({datos.get('ultimo_corte')}) "
+            "no los incluye, y el stock es una foto: no se usan fechas viejas.",
+        )
+    else:
+        ui.note(
+            "info",
+            "La tabla si tiene stock para estos SKU",
+            "Vuelve a consultar. Si sigue en cero, el filtro por bodega o por unidades "
+            "es lo que los deja fuera (todas las filas con 0 unidades).",
+        )
+
+    if datos.get("skus_sin_normalizar") and not datos.get("skus_en_tabla"):
+        ui.note(
+            "info",
+            "Coinciden sin normalizar",
+            "El SKU coincide contra el valor crudo pero no contra el normalizado: "
+            "avisa al equipo, es un caso que la app deberia cubrir.",
+        )
+
+
 def step_reassign(config) -> None:
     payload = st.session_state["payload"]
     report = st.session_state["report"]
@@ -397,13 +482,21 @@ def step_reassign(config) -> None:
 
     # El stock es una foto: si la fuente trajo historico, se aviso cuantas
     # filas de cortes anteriores se dejaron fuera. Sumarlas inventaria stock.
-    descartadas = int(stock.attrs.get("filas_descartadas_por_fecha", 0))
-    if descartadas:
+    anteriores = int(stock.attrs.get("filas_de_cortes_anteriores", 0))
+    reemplazadas = int(stock.attrs.get("filas_reemplazadas_en_el_dia", 0))
+    if anteriores or reemplazadas:
+        detalle = []
+        if anteriores:
+            detalle.append(f"{anteriores:,} de fechas anteriores".replace(",", " "))
+        if reemplazadas:
+            detalle.append(
+                f"{reemplazadas:,} reemplazadas por una foto mas nueva del mismo dia".replace(",", " ")
+            )
         ui.note(
             "info",
-            f"Se ignoraron {descartadas:,} filas de cortes anteriores".replace(",", " "),
-            f"La fuente trajo historico. Solo se usa la foto del {cutoff}, porque el stock "
-            "no se acumula entre fechas.",
+            f"Se ignoraron {anteriores + reemplazadas:,} filas de cortes anteriores".replace(",", " "),
+            f"La fuente trajo historico ({' y '.join(detalle)}). Solo se usa la foto del "
+            f"{cutoff}, porque el stock no se acumula entre fechas.",
         )
 
     ajustes = st.columns([1.1, 1.1, 1.6])

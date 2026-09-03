@@ -26,7 +26,12 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
 3. Toma el SKU de cada pedido y consulta el stock por tienda en BigQuery.
    **Solo entra el ultimo corte**: el stock es una foto, no un acumulado. Si la
    fuente trae historico, los cortes anteriores se descartan y la app informa
-   cuantas filas dejo fuera.
+   cuantas filas dejo fuera. El corte se decide **por dia**: si el origen sella
+   cada lote con su propia hora, todas las horas de ese dia siguen siendo la
+   misma foto (y cuando un SKU/tienda aparece dos veces el mismo dia, gana la
+   marca de tiempo mas nueva).
+   Si la consulta no devuelve nada, la app ofrece un **diagnostico** que dice en
+   que paso se pierde el stock en vez de mostrar ceros sin explicacion.
 4. Reasigna segun una **lista de prioridad configurable en Excel**, nunca en codigo.
    La prioridad viene en bandas con empates, y dentro de una banda gana la tienda
    con **mas stock**.
@@ -204,6 +209,31 @@ de carga queda con exactamente las columnas originales mas la de reasignacion.
 
 ---
 
+## Cuando la app no trae stock
+
+En el paso 3, si la consulta vuelve sin una sola unidad, la app muestra el boton
+**"Diagnosticar fuente de stock"**. Corre contadores de solo lectura sobre la
+tabla y separa causas que en pantalla se ven identicas:
+
+| Lo que informa | Que significa |
+|----------------|---------------|
+| Filas en la tabla = 0 | la tabla de stock esta vacia: es el origen, no la app |
+| Filas del ultimo corte = 0 | hay una `fecha_corte` nueva pero sin datos (carga a medio terminar) |
+| SKU hallados en la tabla = 0 | los SKU del archivo no existen en la tabla de stock |
+| SKU en el ultimo corte = 0 | existen, pero solo en cortes viejos: el stock no usa fechas pasadas |
+
+Dos detalles del origen que hacian que la consulta devolviera **cero filas sin
+fallar**, y que la app ahora resuelve sola:
+
+* `id_producto` numerico. `CAST(x AS STRING)` de un `FLOAT64` da `5438957.0`, que
+  no coincide con el SKU del pedido (`5438957`). La consulta normaliza los dos
+  lados antes de comparar.
+* `fecha_corte` como marca de tiempo. `MAX(fecha_corte)` es un **instante**: si
+  el ETL sella cada lote con su hora, unir por igualdad se queda con una rebanada
+  minima de la foto. Ahora se une por dia.
+
+---
+
 ## Modo sin BigQuery
 
 En la barra lateral se puede elegir **"Archivo de stock"** y subir un Excel/CSV con
@@ -234,7 +264,7 @@ scripts/
   build_release_zip.py          empaqueta el proyecto para GitHub
   test_rules.py                 29 pruebas de reglas de negocio
   test_stock_ledger.py          11 pruebas del descuento temporal de stock
-  test_stock_cutoff.py          10 pruebas del filtro por fecha de corte
+  test_stock_cutoff.py          15 pruebas del filtro por fecha de corte
   test_app_flow.py              9 pruebas de la app (acceso, flujo, sesion)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
@@ -276,9 +306,10 @@ ordenes contra 40 unidades.
 python -m scripts.test_stock_cutoff
 ```
 
-10 casos sobre el filtro de fecha: historico de dos anios, fechas `DD/MM/YYYY`
-(donde comparar como texto elige mal), fechas con hora, y consultas propias sin
-filtro de fecha.
+15 casos sobre el filtro de fecha: historico de dos anios, fechas `DD/MM/YYYY`
+(donde comparar como texto elige mal), fechas con hora, consultas propias sin
+filtro de fecha, marcas de tiempo distintas por lote dentro del mismo dia,
+offsets UTC mezclados y la normalizacion del SKU en la propia consulta.
 
 ```bash
 python -m scripts.test_app_flow

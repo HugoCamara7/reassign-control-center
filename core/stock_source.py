@@ -24,22 +24,54 @@ from core.excel_io import as_text, normalize_sku, normalize_store_code, to_int
 STOCK_COLUMNS = ["sku", "cod_tienda", "stock_tiendas", "stock_bodega", "stock", "fecha_corte"]
 
 # Consulta parametrizada. Se filtra por SKU para no traer la tabla completa y
-# se toma unicamente la ultima `fecha_corte` disponible.
-STOCK_QUERY = """
-WITH ultimo_corte AS (
-  SELECT MAX(fecha_corte) AS fecha_corte
-  FROM `{table}`
+# se toma unicamente el ultimo `fecha_corte` disponible.
+#
+# Todo se compara sobre el texto normalizado a proposito. En el datalake
+# `id_producto` puede llegar como STRING, INT64 o FLOAT64, y `CAST(x AS STRING)`
+# de un FLOAT64 devuelve `5438957.0`: comparado contra el SKU del pedido
+# (`5438957`) no coincide **ninguna fila** y la app parece quedarse sin stock
+# sin que la consulta falle. `_SQL_SKU` deja los dos lados en el mismo formato.
+_SQL_SKU = r"REGEXP_REPLACE(CAST({column} AS STRING), r'\.0+$', '')"
+
+# El corte se compara por DIA, no por instante. Si `fecha_corte` es TIMESTAMP y
+# el ETL sella cada lote con su propia hora, `MAX(fecha_corte)` es un instante y
+# el JOIN por igualdad se queda con una rebanada minima de la foto (o con nada).
+_SQL_DIA = (
+    "COALESCE("
+    "SAFE_CAST(CAST({column} AS STRING) AS DATE), "
+    "SAFE_CAST(LEFT(CAST({column} AS STRING), 10) AS DATE)"
+    ")"
+)
+
+# Las unidades pasan por FLOAT64 antes de INT64: `SAFE_CAST('3.0' AS INT64)` es
+# NULL en BigQuery, y esa fila se contaria como cero.
+_SQL_UNIDADES = "CAST(COALESCE(SAFE_CAST(CAST({column} AS STRING) AS FLOAT64), 0) AS INT64)"
+
+STOCK_QUERY = f"""
+WITH normalizado AS (
+  SELECT
+    {_SQL_SKU.format(column='s.id_producto')}        AS sku,
+    {_SQL_SKU.format(column='s.codigo_tienda')}      AS cod_tienda,
+    {_SQL_UNIDADES.format(column='s.stock_tiendas')} AS stock_tiendas,
+    {_SQL_UNIDADES.format(column='s.stock_bodega')}  AS stock_bodega,
+    s.fecha_corte                                    AS fecha_corte,
+    {_SQL_DIA.format(column='s.fecha_corte')}        AS dia_corte
+  FROM `{{table}}` AS s
+),
+ultimo_corte AS (
+  SELECT MAX(dia_corte) AS dia_corte
+  FROM normalizado
 )
 SELECT
-  CAST(s.id_producto AS STRING)              AS sku,
-  CAST(s.codigo_tienda AS STRING)            AS cod_tienda,
-  SUM(COALESCE(CAST(s.stock_tiendas AS INT64), 0)) AS stock_tiendas,
-  SUM(COALESCE(CAST(s.stock_bodega  AS INT64), 0)) AS stock_bodega,
-  CAST(MAX(s.fecha_corte) AS STRING)         AS fecha_corte
-FROM `{table}` AS s
+  n.sku                                AS sku,
+  n.cod_tienda                         AS cod_tienda,
+  SUM(n.stock_tiendas)                 AS stock_tiendas,
+  SUM(n.stock_bodega)                  AS stock_bodega,
+  CAST(MAX(n.fecha_corte) AS STRING)   AS fecha_corte
+FROM normalizado AS n
 JOIN ultimo_corte AS u
-  ON s.fecha_corte = u.fecha_corte
-WHERE CAST(s.id_producto AS STRING) IN UNNEST(@skus)
+  ON n.dia_corte = u.dia_corte
+WHERE n.sku IN UNNEST(@skus)
 GROUP BY sku, cod_tienda
 """
 
@@ -83,6 +115,34 @@ def _rename_query_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=mapping) if mapping else df
 
 
+def _parse_cutoffs(values: pd.Series) -> pd.Series:
+    """Parsea `fecha_corte` a datetime sin lanzar nunca.
+
+    `pd.to_datetime(..., format="mixed")` **si lanza** con `errors="coerce"`
+    cuando los textos traen offsets UTC distintos ("Mixed timezones detected"),
+    y eso tumbaba la consulta de stock entera. Por eso se reintenta con
+    `utc=True` y, si tampoco, se devuelve todo NaT para que el llamador caiga
+    a la comparacion textual.
+    """
+    textos = values.map(as_text)
+    for utc in (False, True):
+        try:
+            return pd.to_datetime(
+                textos, errors="coerce", dayfirst=True, format="mixed", utc=utc
+            )
+        except (ValueError, TypeError):
+            continue
+    return pd.Series(pd.NaT, index=values.index)
+
+
+def cutoff_days(values: pd.Series) -> pd.Series:
+    """Dia del corte de cada fila (medianoche), o NaT si no se pudo leer."""
+    fechas = _parse_cutoffs(values)
+    if fechas.isna().all():
+        return fechas
+    return fechas.dt.normalize()
+
+
 def latest_cutoff_value(values: pd.Series) -> Any:
     """Ultima fecha de corte, comparando como fecha y no como texto.
 
@@ -95,7 +155,7 @@ def latest_cutoff_value(values: pd.Series) -> Any:
     textos = textos[textos != ""]
     if textos.empty:
         return None
-    fechas = pd.to_datetime(textos, errors="coerce", dayfirst=True, format="mixed")
+    fechas = _parse_cutoffs(textos)
     if fechas.notna().any():
         return textos[fechas == fechas.max()].iloc[0]
     return textos.max()
@@ -107,21 +167,80 @@ def keep_latest_cutoff(df: pd.DataFrame) -> tuple[pd.DataFrame, int, str]:
     El stock es una foto, no un acumulado: si el origen trae historico, sumar
     todos los cortes multiplica las unidades disponibles e inventa stock que
     no existe.
+
+    El corte se decide **por dia, no por instante**. Si `fecha_corte` es una
+    marca de tiempo y el origen sella cada lote con su propia hora, quedarse
+    solo con el instante maximo borra casi toda la foto: la app se queda sin
+    stock aunque BigQuery lo tenga. Elegir la foto vigente entre varias del
+    mismo dia es trabajo de `_collapse_snapshots`, que lo hace por SKU/tienda
+    y por eso no descarta filas de otras tiendas.
     """
     if df.empty or "fecha_corte" not in df.columns:
         return df, 0, ""
-    corte = latest_cutoff_value(df["fecha_corte"])
-    if corte is None:
+    textos = df["fecha_corte"].map(as_text)
+    if not bool((textos != "").any()):
         return df, 0, ""
-    vigentes = df["fecha_corte"].map(as_text) == as_text(corte)
+
+    dias = cutoff_days(df["fecha_corte"])
+    if dias.notna().any():
+        vigentes = dias == dias.max()
+    else:
+        vigentes = textos == textos.max()
+
     descartadas = int((~vigentes).sum())
-    return df[vigentes].reset_index(drop=True), descartadas, as_text(corte)
+    vigente_df = df[vigentes].reset_index(drop=True)
+    corte = latest_cutoff_value(vigente_df["fecha_corte"]) if not vigente_df.empty else None
+    return vigente_df, descartadas, as_text(corte)
+
+
+def _collapse_snapshots(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Una sola fila por `(sku, cod_tienda)`. Devuelve `(df, reemplazadas)`.
+
+    Dentro del corte vigente pueden convivir dos cosas distintas:
+
+    * el mismo SKU/tienda con **varias marcas de tiempo** del mismo dia: es una
+      foto que reemplaza a la anterior, asi que gana la mas reciente;
+    * el mismo SKU/tienda repetido con la **misma** marca de tiempo: es un solo
+      corte desglosado en varias filas, y ahi si se suma.
+
+    Distinguirlo por SKU/tienda —y no para toda la tabla— es lo que evita que
+    una tienda sellada una hora antes desaparezca del stock disponible.
+    """
+    if df.empty:
+        return df, 0
+
+    trabajo = df.copy()
+    fechas = _parse_cutoffs(trabajo["fecha_corte"])
+    reemplazadas = 0
+    if fechas.notna().any():
+        trabajo["_ts"] = fechas
+        maximos = trabajo.groupby(["sku", "cod_tienda"])["_ts"].transform("max")
+        # Un grupo entero sin fecha legible se conserva completo.
+        vigentes = trabajo["_ts"].eq(maximos) | (trabajo["_ts"].isna() & maximos.isna())
+        reemplazadas = int((~vigentes).sum())
+        trabajo = trabajo[vigentes].drop(columns="_ts")
+
+    consolidado = (
+        trabajo.groupby(["sku", "cod_tienda"], as_index=False)
+        .agg(
+            stock_tiendas=("stock_tiendas", "sum"),
+            stock_bodega=("stock_bodega", "sum"),
+            stock=("stock", "sum"),
+            fecha_corte=("fecha_corte", "max"),
+        )[STOCK_COLUMNS]
+    )
+    return consolidado, reemplazadas
 
 
 def _finalize(df: pd.DataFrame, include_central_warehouse: bool) -> pd.DataFrame:
     """Normaliza tipos y calcula la columna `stock` efectiva."""
+    # Se guarda cuantas filas entraron: en pantalla, "cero unidades" se ve
+    # igual si la fuente no devolvio nada o si el saneamiento se lo llevo todo.
+    filas_crudas = int(len(df))
     if df.empty:
-        return empty_stock_frame()
+        vacio = empty_stock_frame()
+        vacio.attrs["filas_crudas"] = filas_crudas
+        return vacio
 
     df = _rename_query_columns(df.copy())
     missing = [name for name in ("sku", "cod_tienda") if name not in df.columns]
@@ -157,7 +276,15 @@ def _finalize(df: pd.DataFrame, include_central_warehouse: bool) -> pd.DataFrame
     # origen trae historico (o una consulta propia sin filtro de fecha), aqui
     # se queda solo la foto mas reciente.
     df, descartadas, corte = keep_latest_cutoff(df)
-    df.attrs["filas_descartadas_por_fecha"] = descartadas
+
+    # Recien con un solo corte encima se consolida el SKU/tienda repetido.
+    # Antes de filtrar por fecha, sumar mezclaria cortes distintos e inventaria
+    # unidades que no existen.
+    df, reemplazadas = _collapse_snapshots(df)
+    df.attrs["filas_crudas"] = filas_crudas
+    df.attrs["filas_descartadas_por_fecha"] = descartadas + reemplazadas
+    df.attrs["filas_de_cortes_anteriores"] = descartadas
+    df.attrs["filas_reemplazadas_en_el_dia"] = reemplazadas
     df.attrs["fecha_corte"] = corte
     return df
 
@@ -242,7 +369,55 @@ class BigQueryStockSource:
         result = _finalize(combined, self.include_central_warehouse)
         if not filters_by_sku and not result.empty:
             result = result[result["sku"].isin(unique)].reset_index(drop=True)
+        result.attrs["skus_solicitados"] = len(unique)
+        result.attrs["tabla"] = self.table
         return result
+
+    def diagnose(self, skus: Iterable[str]) -> dict[str, Any]:
+        """Por que la consulta no trae stock. Solo lectura, sin traer datos.
+
+        Cuando la app muestra cero unidades hay varias causas posibles que se
+        ven identicas en pantalla: la tabla vacia, un corte nuevo sin filas,
+        SKU que no existen, o —la mas traicionera— un `id_producto` numerico
+        cuyo texto (`5438957.0`) no coincide con el SKU del pedido
+        (`5438957`). Esto las separa con contadores concretos.
+        """
+        from google.cloud import bigquery
+
+        unique = sorted({normalize_sku(sku) for sku in skus if normalize_sku(sku)})
+        muestra = unique[:200]
+        sql = f"""
+        WITH normalizado AS (
+          SELECT
+            {_SQL_SKU.format(column='s.id_producto')} AS sku,
+            CAST(s.id_producto AS STRING)             AS sku_crudo,
+            {_SQL_DIA.format(column='s.fecha_corte')} AS dia_corte
+          FROM `{self.table}` AS s
+        ),
+        corte AS (SELECT MAX(dia_corte) AS dia FROM normalizado)
+        SELECT
+          (SELECT COUNT(*) FROM normalizado)                        AS filas_tabla,
+          (SELECT CAST(dia AS STRING) FROM corte)                   AS ultimo_corte,
+          (SELECT COUNT(*) FROM normalizado n, corte c
+             WHERE n.dia_corte = c.dia)                             AS filas_ultimo_corte,
+          (SELECT COUNT(DISTINCT n.sku) FROM normalizado n
+             WHERE n.sku IN UNNEST(@skus))                          AS skus_en_tabla,
+          (SELECT COUNT(DISTINCT n.sku) FROM normalizado n, corte c
+             WHERE n.dia_corte = c.dia AND n.sku IN UNNEST(@skus))  AS skus_en_ultimo_corte,
+          (SELECT COUNT(DISTINCT n.sku_crudo) FROM normalizado n
+             WHERE n.sku_crudo IN UNNEST(@skus))                    AS skus_sin_normalizar
+        """
+        job_config = bigquery.QueryJobConfig(
+            use_legacy_sql=False,
+            query_parameters=[bigquery.ArrayQueryParameter("skus", "STRING", muestra)],
+        )
+        client = self._client()
+        job = client.query(sql, job_config=job_config, location=self.location or None)
+        fila = dict(next(iter(job.result())).items())
+        fila["skus_consultados"] = len(muestra)
+        fila["tabla"] = self.table
+        fila["consulta_propia"] = bool(self.custom_query)
+        return fila
 
 
 @dataclass
@@ -312,24 +487,10 @@ class ManualStockSource:
         if wanted:
             data = data[data["sku"].isin(wanted)]
 
-        # `_finalize` ya dejo solo el ultimo corte. Recien despues se consolida
-        # un mismo SKU/tienda repetido DENTRO de ese corte; sumar entre cortes
-        # distintos inflaria el stock disponible.
-        data = _finalize(data, self.include_central_warehouse)
-        if data.empty:
-            return data
-        atributos = dict(data.attrs)
-        consolidado = (
-            data.groupby(["sku", "cod_tienda"], as_index=False)
-            .agg(
-                stock_tiendas=("stock_tiendas", "sum"),
-                stock_bodega=("stock_bodega", "sum"),
-                stock=("stock", "sum"),
-                fecha_corte=("fecha_corte", "max"),
-            )[STOCK_COLUMNS]
-        )
-        consolidado.attrs.update(atributos)
-        return consolidado
+        # `_finalize` deja solo el ultimo corte y ya consolida el SKU/tienda
+        # repetido dentro de ese corte, igual que para BigQuery: una sola fila
+        # por combinacion, sin mezclar fechas.
+        return _finalize(data, self.include_central_warehouse)
 
 
 def build_stock_index(stock: pd.DataFrame) -> dict[tuple[str, str], int]:
