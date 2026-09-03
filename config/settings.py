@@ -114,8 +114,14 @@ TRACE_COLUMNS = [
 # --- BigQuery (solo lectura) ------------------------------------------------
 DEFAULT_STOCK_TABLE = "forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi"
 
-# Bodega central: es la unica donde el stock de bodega suma al disponible.
-CENTRAL_WAREHOUSE_CODE = "320"
+# Bodegas centrales: las unicas donde `stock_bodega` suma al disponible. En una
+# tienda fisica ese campo apunta a otro almacen y no se puede despachar desde
+# ahi. Se puede ampliar sin tocar codigo con el parametro
+# `codigos_bodega_central` de la hoja 'Parametros'.
+CENTRAL_WAREHOUSE_CODES = ("320",)
+
+# Compatibilidad con configuraciones y scripts anteriores.
+CENTRAL_WAREHOUSE_CODE = CENTRAL_WAREHOUSE_CODES[0]
 
 # --- Parametros de negocio por defecto (editables en la hoja Parametros) -----
 DEFAULT_PARAMS = {
@@ -125,6 +131,7 @@ DEFAULT_PARAMS = {
     "agrupar_por_shgroup": "NO",
     "fallback_linea_si_grupo_falla": "SI",
     "incluir_stock_bodega_central": "SI",
+    "codigos_bodega_central": ",".join(CENTRAL_WAREHOUSE_CODES),
     "stock_seguridad_global": "0",
     "reserva_por_tienda": "1",
     "ordenar_por_stock": "SI",
@@ -141,7 +148,11 @@ PARAM_HELP = {
         "Solo aplica con agrupar_por_shgroup=SI. SI = si ninguna tienda cubre el grupo "
         "completo, se resuelve linea por linea. NO = el grupo entero queda sin opcion."
     ),
-    "incluir_stock_bodega_central": "SI = en la bodega 320 se suma stock_bodega al disponible.",
+    "incluir_stock_bodega_central": "SI = en las bodegas centrales se suma stock_bodega al disponible.",
+    "codigos_bodega_central": (
+        "Bodegas donde stock_bodega si es despachable, separadas por coma. "
+        "Por defecto solo la 320."
+    ),
     "stock_seguridad_global": "Unidades que nunca se tocan en ninguna tienda.",
     "reserva_por_tienda": (
         "Unidades que deberia conservar la tienda despues de ceder. Con 1, se evita "

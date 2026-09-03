@@ -151,6 +151,122 @@ def test_logout():
     assert "authenticated" not in app.session_state, "la sesion sigue abierta"
 
 
+# ---------------------------------------------------------------------------
+# Pasos 3 a 5: consulta de stock y reasignacion
+# ---------------------------------------------------------------------------
+def pedidos() -> "excel_io.WorkbookPayload":
+    """Archivo de pedidos minimo, con el SKU en las tres formas que llegan."""
+    import pandas as pd
+
+    from core import excel_io
+
+    headers = ["Order", "Sitio", "Estado", "Marca", "SKU", "Unidades"]
+    filas = [
+        ["vns-1", "columbiaperu", "SIN_STOCK", "Columbia", "0005438957", 1],
+        ["vns-2", "columbiaperu", "SIN_STOCK", "Columbia", 5438958.0, 1],
+        ["vns-3", "columbiaperu", "SIN_STOCK", "Columbia", 5438959, 1],
+    ]
+    return excel_io.WorkbookPayload(
+        df=pd.DataFrame(filas, columns=headers, dtype=object),
+        headers=headers,
+        sheet_name="Hoja1",
+        source_name="pedidos.xlsx",
+        source_format="xlsx",
+    )
+
+
+def con_pedidos(stock=None, stock_skus=None) -> AppTest:
+    """App con la sesion ya cargada hasta el paso que se quiera probar."""
+    from core.priority import load_priority
+    from core.validation import validate
+
+    payload = pedidos()
+    config = load_priority()
+    app = AppTest.from_file(APP, default_timeout=60)
+    app.secrets["app_auth"] = {}
+    app.session_state["payload"] = payload
+    app.session_state["report"] = validate(payload.df, payload.headers, config)
+    app.session_state["estados_objetivo_sel"] = ["SIN_STOCK"]
+    if stock is not None:
+        app.session_state["stock"] = stock
+        app.session_state["stock_skus"] = stock_skus
+    return app.run()
+
+
+def stock_de_prueba():
+    """Un SKU con unidades, uno en cero y uno que la fuente no conoce."""
+    from core.stock_source import ManualStockSource
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        [
+            {"sku": "5438957", "cod_tienda": "59", "stock": 4, "fecha_corte": "2026-08-20"},
+            {"sku": "5438958", "cod_tienda": "59", "stock": 0, "fecha_corte": "2026-08-20"},
+        ]
+    )
+    return ManualStockSource(frame, True).fetch(["5438957", "5438958", "5438959"])
+
+
+@case("Paso 3: con el archivo validado aparece el boton de consultar stock")
+def test_paso_3():
+    app = con_pedidos()
+    etiquetas = [button.label for button in app.button]
+    assert "Consultar stock" in etiquetas, etiquetas
+    assert not app.exception, app.exception
+
+
+@case("Paso 4: 'SKU con stock' cuenta solo los que traen unidades")
+def test_paso_4_kpi():
+    app = con_pedidos(stock_de_prueba(), ["5438957", "5438958", "5438959"])
+    cuerpo = " ".join(element.value for element in app.markdown)
+    # 3 consultados: uno con unidades, uno en cero, uno sin respuesta.
+    assert "1 sin respuesta" in cuerpo, cuerpo[-1500:]
+    assert "1 en cero" in cuerpo, cuerpo[-1500:]
+    assert "Ejecutar reasignacion" in [button.label for button in app.button]
+    assert not app.exception, app.exception
+
+
+@case("Paso 4: el detalle por SKU separa 'sin respuesta' de 'en cero'")
+def test_paso_4_detalle():
+    app = con_pedidos(stock_de_prueba(), ["5438957", "5438958", "5438959"])
+    situaciones = set()
+    for frame in app.dataframe:
+        if "situacion" in getattr(frame.value, "columns", []):
+            situaciones |= set(frame.value["situacion"])
+    assert situaciones == {"CON STOCK", "EN CERO", "SIN RESPUESTA"}, situaciones
+    assert not app.exception, app.exception
+
+
+@case("Stock viejo: si cambian los SKU a consultar, la foto anterior se descarta")
+def test_stock_desactualizado():
+    # El stock guardado corresponde a otra seleccion de estados: si se
+    # conservara, los SKU nuevos apareceria como "sin stock" sin haberse
+    # consultado jamas.
+    app = con_pedidos(stock_de_prueba(), ["999999"])
+    assert "stock" not in app.session_state, "se reutilizo una consulta que ya no aplica"
+    cuerpo = " ".join(element.value for element in app.markdown)
+    assert "Cambio la lista de SKU a consultar" in cuerpo, cuerpo[-1200:]
+    assert not app.exception, app.exception
+
+
+@case("Paso 5: la reasignacion corre desde la app y deja el archivo listo")
+def test_paso_5():
+    app = con_pedidos(stock_de_prueba(), ["5438957", "5438958", "5438959"])
+    for button in app.button:
+        if button.label == "Ejecutar reasignacion":
+            button.click().run()
+            break
+    else:  # pragma: no cover
+        raise AssertionError("no se encontro el boton de reasignacion")
+    assert not app.exception, app.exception
+    result = app.session_state["result"]
+    # Solo el SKU con unidades se puede reasignar; los otros dos quedan marcados.
+    assert result.kpis.reasignados == 1, result.kpis
+    assert result.kpis.sin_stock == 2, result.kpis
+    etiquetas = [button.label for button in app.download_button]
+    assert "Descargar Excel de carga" in etiquetas, etiquetas
+
+
 def main() -> int:
     passed, failed = 0, []
     for name, test in CASES:

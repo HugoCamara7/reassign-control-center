@@ -24,9 +24,16 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
    `SIN_DESPACHO`, pero sirve cualquiera (`PENDIENTE_ASIGNACION`, etc.).
    Tolera `sin stock`, `Sin-Stock`, `SIN_STOCK` como el mismo estado.
 3. Toma el SKU de cada pedido y consulta el stock por tienda en BigQuery.
+   **El SKU se canoniza en los dos lados** (archivo y consulta): `0005438957`,
+   `5438957.0` y `5438957` son el mismo producto, asi que un campo numerico o
+   unos ceros a la izquierda no dejan al pedido sin stock.
    **Solo entra el ultimo corte**: el stock es una foto, no un acumulado. Si la
    fuente trae historico, los cortes anteriores se descartan y la app informa
-   cuantas filas dejo fuera.
+   cuantas filas dejo fuera. Las filas repetidas de un mismo par (SKU, tienda)
+   dentro del corte se suman, nunca se pisan.
+   La app muestra, SKU por SKU, si la fuente no lo devolvio (`SIN RESPUESTA`),
+   si lo devolvio en cero (`EN CERO`) o con unidades (`CON STOCK`); el detalle
+   tambien viaja en el reporte operativo.
 4. Reasigna segun una **lista de prioridad configurable en Excel**, nunca en codigo.
    La prioridad viene en bandas con empates, y dentro de una banda gana la tienda
    con **mas stock**.
@@ -144,7 +151,8 @@ python -m scripts.import_priority "ruta\Priorizacion Tiendas.xlsx"
 | `permitir_reasignacion_parcial` | `NO` | cubrir solo parte de las unidades |
 | `agrupar_por_shgroup` | `NO` | todas las lineas de un despacho a la misma tienda |
 | `fallback_linea_si_grupo_falla` | `SI` | si nadie cubre el grupo, resolver linea por linea |
-| `incluir_stock_bodega_central` | `SI` | en la bodega 320 suma `stock_bodega` |
+| `incluir_stock_bodega_central` | `SI` | en las bodegas centrales suma `stock_bodega` |
+| `codigos_bodega_central` | `320` | que bodegas cuentan como centrales, separadas por coma |
 | `stock_seguridad_global` | `0` | unidades intocables en todas las tiendas |
 | `reserva_por_tienda` | `1` | unidades que la tienda deberia conservar tras ceder; `0` desactiva |
 | `ordenar_por_stock` | `SI` | dentro de la misma banda gana la tienda con mas stock |
@@ -235,7 +243,8 @@ scripts/
   test_rules.py                 29 pruebas de reglas de negocio
   test_stock_ledger.py          11 pruebas del descuento temporal de stock
   test_stock_cutoff.py          10 pruebas del filtro por fecha de corte
-  test_app_flow.py              9 pruebas de la app (acceso, flujo, sesion)
+  test_stock_match.py           16 pruebas del cruce SKU <-> stock
+  test_app_flow.py              15 pruebas de la app (acceso, flujo, pasos 3-5)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
   smoke_test.py                 prueba end-to-end contra un Excel real
 docs/
@@ -281,12 +290,25 @@ python -m scripts.test_stock_cutoff
 filtro de fecha.
 
 ```bash
+python -m scripts.test_stock_match
+```
+
+16 casos sobre el cruce entre el SKU del pedido y el stock, que es donde un
+"sin stock" puede ser en realidad un codigo que no cruza: ceros a la izquierda
+en cualquiera de los dos lados, el `.0` de un campo numerico, codigos
+alfanumericos que **si** conservan su cero, filas repetidas del mismo par
+(SKU, tienda) que deben sumarse, bodegas centrales, y el detalle que separa
+"no vino en la consulta" de "vino en cero".
+
+```bash
 python -m scripts.test_app_flow
 ```
 
-9 casos sobre la aplicacion con `streamlit.testing.AppTest`: pantalla de acceso,
-credenciales correctas e incorrectas, normalizacion del correo, cierre de sesion y
-arranque del flujo con la sesion iniciada.
+15 casos sobre la aplicacion con `streamlit.testing.AppTest`: pantalla de acceso,
+credenciales correctas e incorrectas, normalizacion del correo, cierre de sesion,
+arranque del flujo, los KPI del paso 4, el detalle de stock por SKU, el descarte
+de una consulta de stock que ya no corresponde y la corrida completa hasta el
+boton de descarga.
 
 ```bash
 python -m scripts.test_secrets_compat
