@@ -234,6 +234,40 @@ def test_cutoff_dd_mm_yyyy():
     assert stock_cutoff(stock) == "20/08/2026", stock.to_dict("records")
 
 
+@case("Formula de bodega central: sumar, solo_bodega y restar_tiendas")
+def test_formula_bodega_central():
+    # Cual corresponde depende de como modela el origen los dos almacenes;
+    # por eso se elige en la hoja Parametros y no esta fija en el codigo.
+    datos = pd.DataFrame(
+        [
+            {"sku": "A", "cod_tienda": "320", "stock_tiendas": 30, "stock_bodega": 100,
+             "fecha_corte": "2026-09-03"},
+        ]
+    )
+    def disponible(modo):
+        stock = ManualStockSource(datos, True, ("320",), modo).fetch(["A"])
+        return int(stock.loc[0, "stock"])
+
+    assert disponible("sumar") == 130
+    assert disponible("solo_bodega") == 100
+    assert disponible("restar_tiendas") == 70
+    # Un valor desconocido no rompe: cae en el comportamiento de siempre.
+    assert disponible("cualquier_cosa") == 130
+
+
+@case("La formula solo aplica a la bodega central, nunca a una tienda fisica")
+def test_formula_no_toca_tienda_fisica():
+    datos = pd.DataFrame(
+        [
+            {"sku": "A", "cod_tienda": "59", "stock_tiendas": 4, "stock_bodega": 77,
+             "fecha_corte": "2026-09-03"},
+        ]
+    )
+    for modo in ("sumar", "solo_bodega", "restar_tiendas"):
+        stock = ManualStockSource(datos, True, ("320",), modo).fetch(["A"])
+        assert int(stock.loc[0, "stock"]) == 4, (modo, stock.to_dict("records"))
+
+
 def main() -> int:
     passed, failed = 0, []
     for name, test in CASES:

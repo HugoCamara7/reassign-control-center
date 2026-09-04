@@ -379,11 +379,14 @@ def step_stock(config, mode: str) -> None:
     st.session_state.pop("stock_error", None)
     include_central = config.flag("incluir_stock_bodega_central")
     central_codes = config.param("codigos_bodega_central")
+    formula_central = config.param("formula_bodega_central")
 
     try:
         with st.spinner("Consultando stock..."):
             if mode.startswith("BigQuery"):
-                source = secrets_to_source(bigquery_secrets(), include_central, central_codes)
+                source = secrets_to_source(
+                    bigquery_secrets(), include_central, central_codes, formula_central
+                )
                 stock = source.fetch(skus)
             else:
                 cached = st.session_state.get("stock_file")
@@ -391,7 +394,7 @@ def step_stock(config, mode: str) -> None:
                     raise ValueError("Sube un archivo de stock en la barra lateral.")
                 frame = excel_io.read_stock_file(cached[0], cached[1])
                 stock = ManualStockSource(
-                    frame, include_central, tuple(central_codes.split(","))
+                    frame, include_central, tuple(central_codes.split(",")), formula_central
                 ).fetch(skus)
     except Exception as exc:
         st.session_state["stock_error"] = str(exc)

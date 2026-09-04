@@ -257,6 +257,18 @@ def keep_latest_cutoff(df: pd.DataFrame) -> tuple[pd.DataFrame, int, str]:
     return vigente_df, descartadas, as_text(corte)
 
 
+# Formas validas de combinar los dos almacenes de una bodega central. Cual
+# corresponde depende de como modela el origen: no hay una universalmente
+# correcta, por eso se elige en la hoja Parametros y no en el codigo.
+CENTRAL_FORMULAS = ("sumar", "solo_bodega", "restar_tiendas")
+
+
+def central_formula(value: Any = None) -> str:
+    """Normaliza el nombre de la formula; lo desconocido cae en `sumar`."""
+    texto = as_text(value).strip().lower().replace(" ", "_").replace("-", "_")
+    return texto if texto in CENTRAL_FORMULAS else "sumar"
+
+
 def central_warehouse_codes(codes: Iterable[str] | None = None) -> set[str]:
     """Bodegas donde `stock_bodega` si es despachable. Por defecto, la 320."""
     if codes is None:
@@ -319,6 +331,7 @@ def _finalize(
     df: pd.DataFrame,
     include_central_warehouse: bool,
     central_codes: Iterable[str] | None = None,
+    formula: Any = None,
 ) -> pd.DataFrame:
     """Normaliza tipos y calcula la columna `stock` efectiva."""
     # Se guarda cuantas filas entraron: en pantalla, "cero unidades" se ve
@@ -346,14 +359,25 @@ def _finalize(
         df["fecha_corte"] = ""
     df["fecha_corte"] = df["fecha_corte"].map(as_text)
 
-    # El stock de bodega solo suma en las bodegas centrales (por defecto, la
-    # 320). En una tienda fisica el `stock_bodega` corresponde a otro almacen y
-    # no es despachable desde ahi, asi que se ignora.
+    # En una tienda fisica el `stock_bodega` corresponde a otro almacen y no es
+    # despachable desde ahi, asi que ahi siempre manda `stock_tiendas` solo.
+    #
+    # En una bodega central no hay una unica respuesta correcta: depende de si
+    # el origen guarda los dos almacenes por separado (hay que sumar), si
+    # `stock_bodega` ya incluye el piso (hay que tomar solo bodega) o si lo de
+    # piso ya salio del total (hay que restar). Por eso la formula se elige en
+    # la hoja Parametros; el default `sumar` es el comportamiento de siempre.
     central = df["cod_tienda"].isin(central_warehouse_codes(central_codes))
+    df["stock"] = df["stock_tiendas"]
     if include_central_warehouse:
-        df["stock"] = df["stock_tiendas"] + df["stock_bodega"].where(central, 0)
-    else:
-        df["stock"] = df["stock_tiendas"]
+        modo = central_formula(formula)
+        if modo == "solo_bodega":
+            en_central = df["stock_bodega"]
+        elif modo == "restar_tiendas":
+            en_central = df["stock_bodega"] - df["stock_tiendas"]
+        else:
+            en_central = df["stock_tiendas"] + df["stock_bodega"]
+        df["stock"] = en_central.where(central, df["stock_tiendas"])
     df["stock"] = df["stock"].astype(int)
 
     df = df[df["sku"] != ""]
@@ -393,6 +417,7 @@ class BigQueryStockSource:
     service_account_info: dict[str, Any] | None = None
     include_central_warehouse: bool = True
     central_codes: tuple[str, ...] = ()
+    central_formula: str = "sumar"
     custom_query: str = ""
     name: str = "BigQuery"
 
@@ -472,7 +497,10 @@ class BigQueryStockSource:
             frames.append(job.result().to_dataframe())
 
         combined = pd.concat(frames, ignore_index=True) if frames else empty_stock_frame()
-        result = _finalize(combined, self.include_central_warehouse, self.central_codes or None)
+        result = _finalize(
+            combined, self.include_central_warehouse, self.central_codes or None,
+            self.central_formula,
+        )
         if not filters_by_sku and not result.empty:
             result = result[result["sku"].isin(unique)].reset_index(drop=True)
         result.attrs["skus_solicitados"] = len(unique)
@@ -534,6 +562,7 @@ class ManualStockSource:
     frame: pd.DataFrame
     include_central_warehouse: bool = True
     central_codes: tuple[str, ...] = ()
+    central_formula: str = "sumar"
     name: str = "Archivo de stock"
 
     COLUMN_ALIASES = {
@@ -597,7 +626,10 @@ class ManualStockSource:
 
         # `_finalize` deja solo el ultimo corte y recien ahi suma las filas
         # repetidas del mismo par (SKU, tienda).
-        return _finalize(data, self.include_central_warehouse, self.central_codes or None)
+        return _finalize(
+            data, self.include_central_warehouse, self.central_codes or None,
+            self.central_formula,
+        )
 
 
 def build_stock_index(stock: pd.DataFrame) -> dict[tuple[str, str], int]:
@@ -676,6 +708,7 @@ def secrets_to_source(
     secrets: dict[str, Any],
     include_central_warehouse: bool,
     central_codes: Iterable[str] | None = None,
+    formula: Any = None,
 ) -> BigQueryStockSource:
     """Construye el proveedor de BigQuery desde `st.secrets`.
 
@@ -696,6 +729,7 @@ def secrets_to_source(
         service_account_info=service_account_info,
         include_central_warehouse=include_central_warehouse,
         central_codes=tuple(sorted(central_warehouse_codes(central_codes))),
+        central_formula=central_formula(formula),
         custom_query=as_text(config.get("stock_query")),
     )
 
