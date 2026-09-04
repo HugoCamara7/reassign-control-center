@@ -29,7 +29,7 @@ from core.stock_source import (
     stock_coverage,
     stock_cutoff,
 )
-from core.excel_io import normalize_status
+from core.excel_io import as_text, normalize_status
 from core.validation import resolve_columns, validate
 from scripts.build_priority_template import build_bytes as build_priority_bytes
 from ui import components as ui
@@ -352,6 +352,19 @@ def step_stock(config, mode: str) -> None:
         f"{len(skus):,} SKU unicos a consultar. La consulta es de solo lectura: "
         "BigQuery nunca se modifica.".replace(",", " "),
     )
+
+    # Un `stock_query` en los secrets se ejecuta TAL CUAL: no pasa por la
+    # canonizacion del SKU ni por el corte por dia que trae la app. Si la
+    # consulta propia esta desactualizada, la app informa "sin stock" con la
+    # tabla llena y desde la interfaz no habia forma de saberlo.
+    if mode.startswith("BigQuery") and as_text(bigquery_secrets().get("stock_query")):
+        ui.note(
+            "warn",
+            "Los secrets traen una consulta de stock propia",
+            "La app la usa TAL CUAL, asi que no le aplica su canonizacion del SKU ni "
+            "su corte por dia. Si el stock no llega, quita `stock_query` del bloque "
+            "[bigquery] de los secrets para que la app use su propia consulta.",
+        )
 
     if st.session_state.get("stock_error"):
         ui.note("bad", "Fallo la consulta de stock", st.session_state["stock_error"])

@@ -118,6 +118,33 @@ def build_stock_query(table: str) -> str:
 # BigQuery limita el tamano de los parametros; los SKU se mandan por lotes.
 SKU_BATCH_SIZE = 5000
 
+# Anchos habituales de un codigo de producto guardado como texto con ceros a
+# la izquierda. Se usan solo para armar variantes de busqueda, nunca para
+# escribir un SKU.
+SKU_PADDED_WIDTHS = (8, 10, 12, 13)
+
+
+def sku_variants(sku: str) -> list[str]:
+    """Formas crudas en que un mismo SKU puede estar guardado en la tabla.
+
+    La consulta propia del repo canoniza los dos lados y no necesita esto.
+    Pero un `stock_query` de los secrets se ejecuta **tal cual**: si compara
+    `CAST(id_producto AS STRING)` en crudo contra el SKU ya normalizado del
+    Excel, no devuelve ninguna fila y la app informa "sin stock" con la tabla
+    llena. Mandar tambien las variantes hace que ese cruce funcione sin tener
+    que reescribir la consulta del usuario.
+    """
+    canonico = normalize_sku(sku)
+    if not canonico:
+        return []
+    variantes = [canonico]
+    if canonico.isdigit():
+        variantes.append(f"{canonico}.0")
+        variantes.extend(
+            canonico.rjust(ancho, "0") for ancho in SKU_PADDED_WIDTHS if len(canonico) < ancho
+        )
+    return list(dict.fromkeys(variantes))
+
 
 class StockSource(Protocol):
     name: str
@@ -418,8 +445,17 @@ class BigQueryStockSource:
         # Catalogo Control Center, que trae el corte completo). En ese caso se
         # ejecuta una sola vez, sin parametros, y se filtra despues en memoria.
         filters_by_sku = "@skus" in query
+
+        # La consulta del repo canoniza el SKU dentro de BigQuery, asi que le
+        # basta el valor canonico. Una consulta propia se ejecuta tal cual y
+        # puede estar comparando el valor crudo: ahi se mandan las variantes.
+        if filters_by_sku and self.custom_query.strip():
+            a_buscar = list(dict.fromkeys(v for sku in unique for v in sku_variants(sku)))
+        else:
+            a_buscar = unique
+
         batches = (
-            [unique[start : start + SKU_BATCH_SIZE] for start in range(0, len(unique), SKU_BATCH_SIZE)]
+            [a_buscar[start : start + SKU_BATCH_SIZE] for start in range(0, len(a_buscar), SKU_BATCH_SIZE)]
             if filters_by_sku
             else [None]
         )
