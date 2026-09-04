@@ -132,6 +132,7 @@ DEFAULT_PARAMS = {
     "fallback_linea_si_grupo_falla": "SI",
     "incluir_stock_bodega_central": "SI",
     "codigos_bodega_central": ",".join(CENTRAL_WAREHOUSE_CODES),
+    "formula_bodega_central": "sumar",
     "stock_seguridad_global": "0",
     "reserva_por_tienda": "1",
     "ordenar_por_stock": "SI",
@@ -149,6 +150,14 @@ PARAM_HELP = {
         "completo, se resuelve linea por linea. NO = el grupo entero queda sin opcion."
     ),
     "incluir_stock_bodega_central": "SI = en las bodegas centrales se suma stock_bodega al disponible.",
+    "formula_bodega_central": (
+        "Como se combinan stock_tiendas y stock_bodega EN UNA BODEGA CENTRAL. "
+        "sumar = stock_tiendas + stock_bodega (por defecto: son dos almacenes "
+        "distintos). solo_bodega = stock_bodega (usar si stock_bodega ya incluye "
+        "lo que hay en piso). restar_tiendas = stock_bodega - stock_tiendas (usar "
+        "si lo de piso ya esta comprometido y sale del total de bodega). "
+        "En una tienda fisica nunca aplica: ahi solo cuenta stock_tiendas."
+    ),
     "codigos_bodega_central": (
         "Bodegas donde stock_bodega si es despachable, separadas por coma. "
         "Por defecto solo la 320."

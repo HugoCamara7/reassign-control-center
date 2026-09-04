@@ -29,8 +29,11 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
    unos ceros a la izquierda no dejan al pedido sin stock.
    **Solo entra el ultimo corte**: el stock es una foto, no un acumulado. Si la
    fuente trae historico, los cortes anteriores se descartan y la app informa
-   cuantas filas dejo fuera. Las filas repetidas de un mismo par (SKU, tienda)
-   dentro del corte se suman, nunca se pisan.
+   cuantas filas dejo fuera. El corte se decide **por dia**: si el origen sella
+   cada lote con su propia hora, todas las horas de ese dia siguen siendo la
+   misma foto. Las filas repetidas de un mismo par (SKU, tienda) con la misma
+   marca de tiempo se suman, nunca se pisan; si el par trae **dos** marcas de
+   tiempo del mismo dia, gana la mas nueva (son dos fotos, no dos almacenes).
    La app muestra, SKU por SKU, si la fuente no lo devolvio (`SIN RESPUESTA`),
    si lo devolvio en cero (`EN CERO`) o con unidades (`CON STOCK`); el detalle
    tambien viaja en el reporte operativo.
@@ -212,6 +215,35 @@ de carga queda con exactamente las columnas originales mas la de reasignacion.
 
 ---
 
+## Cuando la app no trae stock
+
+El paso 4 ya separa, SKU por SKU, el que la fuente no conoce (`SIN RESPUESTA`)
+del que vuelve en cero (`EN CERO`). Si no vuelve **ni una fila**, el paso 3
+muestra ademas el boton **"Diagnosticar fuente de stock"**, que corre
+contadores de solo lectura sobre la tabla y separa causas que en pantalla se
+ven identicas:
+
+| Lo que informa | Que significa |
+|----------------|---------------|
+| Filas en la tabla = 0 | la tabla de stock esta vacia: es el origen, no la app |
+| Filas del ultimo corte = 0 | hay una `fecha_corte` nueva pero sin datos (carga a medio terminar) |
+| SKU hallados en la tabla = 0 | los SKU del archivo no existen en la tabla de stock |
+| SKU en el ultimo corte = 0 | existen, pero solo en cortes viejos: el stock no usa fechas pasadas |
+
+El diagnostico canoniza el SKU con la misma regla que la consulta real, para
+que sus contadores sean comparables con lo que devuelve el paso 3.
+
+Dos detalles del origen que hacian que la consulta devolviera **cero filas sin
+fallar**, y que la app ahora resuelve sola:
+
+* `fecha_corte` como marca de tiempo. `MAX(fecha_corte)` es un **instante**: si
+  el ETL sella cada lote con su hora, unir por igualdad se queda con una
+  rebanada minima de la foto. Ahora se une por dia.
+* Offsets UTC mezclados en `fecha_corte`. Al compararlos como fecha, pandas
+  lanzaba `Mixed timezones detected` y tumbaba la consulta entera.
+
+---
+
 ## Modo sin BigQuery
 
 En la barra lateral se puede elegir **"Archivo de stock"** y subir un Excel/CSV con
@@ -242,7 +274,7 @@ scripts/
   build_release_zip.py          empaqueta el proyecto para GitHub
   test_rules.py                 29 pruebas de reglas de negocio
   test_stock_ledger.py          11 pruebas del descuento temporal de stock
-  test_stock_cutoff.py          10 pruebas del filtro por fecha de corte
+  test_stock_cutoff.py          15 pruebas del filtro por fecha de corte
   test_stock_match.py           16 pruebas del cruce SKU <-> stock
   test_app_flow.py              15 pruebas de la app (acceso, flujo, pasos 3-5)
   test_secrets_compat.py        11 pruebas de compatibilidad de secrets
@@ -285,9 +317,10 @@ ordenes contra 40 unidades.
 python -m scripts.test_stock_cutoff
 ```
 
-10 casos sobre el filtro de fecha: historico de dos anios, fechas `DD/MM/YYYY`
-(donde comparar como texto elige mal), fechas con hora, y consultas propias sin
-filtro de fecha.
+15 casos sobre el filtro de fecha: historico de dos anios, fechas `DD/MM/YYYY`
+(donde comparar como texto elige mal), fechas con hora, consultas propias sin
+filtro de fecha, marcas de tiempo distintas por lote dentro del mismo dia,
+offsets UTC mezclados y la canonizacion del SKU en la propia consulta.
 
 ```bash
 python -m scripts.test_stock_match
