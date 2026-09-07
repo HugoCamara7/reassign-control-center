@@ -401,6 +401,32 @@ def test_missing_sku():
     assert result.kpis.errores == 1
 
 
+@case("Sin opcion: se informa el mejor stock hallado, no un 0 enganoso")
+def test_sin_opcion_informa_disponible():
+    # Con 0 en las dos situaciones, desde la app se veian identicas: "no hay
+    # stock en ningun lado" y "hay, pero repartido y no alcanza".
+    config = make_config()
+    orders = make_orders([order("P1", "A", 5)])
+    orders[settings.COL_STATUS] = "SIN_STOCK"
+    result = run(orders, {("A", "10"): 2, ("A", "20"): 3}, config)
+    fila = result.detail.iloc[0]
+    assert fila["Resultado"] == settings.RESULT_NO_OPTION
+    assert int(fila["Stock disponible"]) == 3, fila.to_dict()
+    assert "la mejor es TIENDA B con 3" in fila["Detalle"], fila["Detalle"]
+    # La columna de trazabilidad del Excel lleva el mismo dato.
+    assert int(result.output_df.iloc[0]["Reasig_Stock_Disponible"]) == 3
+
+
+@case("Sin opcion: sin stock en ninguna tienda el 0 es real y se dice cuantas se miraron")
+def test_sin_opcion_sin_stock_real():
+    config = make_config()
+    orders = make_orders([order("P1", "A", 1)])
+    orders[settings.COL_STATUS] = "SIN_STOCK"
+    fila = run(orders, {}, config).detail.iloc[0]
+    assert int(fila["Stock disponible"]) == 0
+    assert "Ninguna de las 3 tiendas" in fila["Detalle"], fila["Detalle"]
+
+
 def main() -> int:
     passed, failed = 0, []
     for name, test in CASES:
