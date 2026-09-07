@@ -118,8 +118,9 @@ def test_query_schema_aliases():
     assert out.loc[0, "cod_tienda"] == "151"
     # En tienda solo cuenta el stock de sala...
     assert out.loc[0, "stock"] == 3
-    # ...y en la bodega central 320 se suma el de bodega.
-    assert out.loc[1, "stock"] == 5
+    # ...y en la bodega central 320 cuenta su propio stock_bodega (4), no la
+    # suma con el piso: son la misma mercaderia contada dos veces.
+    assert out.loc[1, "stock"] == 4
 
 
 @case("Una consulta sin las columnas minimas falla con un mensaje claro")

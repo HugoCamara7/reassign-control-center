@@ -29,7 +29,12 @@ Subir archivo -> Validar -> Consultar BigQuery -> Reasignar -> Revisar -> Descar
    unos ceros a la izquierda no dejan al pedido sin stock.
    **Solo entra el ultimo corte**: el stock es una foto, no un acumulado. Si la
    fuente trae historico, los cortes anteriores se descartan y la app informa
-   cuantas filas dejo fuera. El corte se decide **por dia**: si el origen sella
+   cuantas filas dejo fuera.
+   **El disponible es neto**: a cada almacen se le descuentan sus columnas de
+   reserva, reconocidas por el encabezado (cualquiera que diga `reserva`). En
+   una bodega central cuenta su `stock_bodega`; en una tienda fisica, su
+   `stock_tiendas`. Nunca se suman los dos: es la misma mercaderia contada dos
+   veces. El corte se decide **por dia**: si el origen sella
    cada lote con su propia hora, todas las horas de ese dia siguen siendo la
    misma foto. Las filas repetidas de un mismo par (SKU, tienda) con la misma
    marca de tiempo se suman, nunca se pisan; si el par trae **dos** marcas de
@@ -156,6 +161,7 @@ python -m scripts.import_priority "ruta\Priorizacion Tiendas.xlsx"
 | `fallback_linea_si_grupo_falla` | `SI` | si nadie cubre el grupo, resolver linea por linea |
 | `incluir_stock_bodega_central` | `SI` | en las bodegas centrales suma `stock_bodega` |
 | `codigos_bodega_central` | `320` | que bodegas cuentan como centrales, separadas por coma |
+| `formula_bodega_central` | `solo_bodega` | `solo_bodega`, `sumar` o `restar_tiendas` en una bodega central |
 | `stock_seguridad_global` | `0` | unidades intocables en todas las tiendas |
 | `reserva_por_tienda` | `1` | unidades que la tienda deberia conservar tras ceder; `0` desactiva |
 | `ordenar_por_stock` | `SI` | dentro de la misma banda gana la tienda con mas stock |

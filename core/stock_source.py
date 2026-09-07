@@ -40,6 +40,48 @@ SKU_CANONICO_SQL = (
     "{column})"
 )
 
+# --- Reservas ---------------------------------------------------------------
+# El disponible real de un almacen es su stock MENOS lo reservado. Las columnas
+# de reserva no tienen un nombre fijo en el origen, asi que se reconocen por el
+# encabezado: cualquier columna que diga "reserva".
+#
+# Se reparten por lo que nombre el propio encabezado: si menciona bodega resta
+# de bodega, si menciona tienda resta de tiendas, y una reserva sin apellido
+# resta de las dos. Eso ultimo es seguro porque en cada fila solo se usa uno de
+# los dos almacenes: en una bodega central manda `stock_bodega` y en una tienda
+# fisica manda `stock_tiendas`.
+RESERVE_HINT = "reserva"
+
+
+def classify_reserve_columns(names: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Devuelve `(reservas_de_tiendas, reservas_de_bodega)` segun el encabezado."""
+    de_tiendas: list[str] = []
+    de_bodega: list[str] = []
+    for name in names:
+        texto = as_text(name).strip().lower()
+        if RESERVE_HINT not in texto:
+            continue
+        menciona_bodega = "bodega" in texto or "almacen" in texto
+        menciona_tienda = "tienda" in texto or "local" in texto
+        if menciona_bodega and not menciona_tienda:
+            de_bodega.append(name)
+        elif menciona_tienda and not menciona_bodega:
+            de_tiendas.append(name)
+        else:
+            # Sin apellido (o con los dos): aplica al almacen que use la fila.
+            de_tiendas.append(name)
+            de_bodega.append(name)
+    return de_tiendas, de_bodega
+
+
+def _net_sql(base_column: str, reserves: Iterable[str]) -> str:
+    """`unidades(base) - unidades(reserva1) - ...` en SQL."""
+    expresion = UNIDADES_SQL.format(column=base_column)
+    for reserve in reserves:
+        expresion += f" - {UNIDADES_SQL.format(column=reserve)}"
+    return expresion
+
+
 # --- Corte y unidades dentro de BigQuery ------------------------------------
 # El corte se compara por DIA, no por instante. `fecha_corte` puede ser una
 # marca de tiempo, y entonces `MAX(fecha_corte)` es un **instante**: si el ETL
@@ -66,8 +108,8 @@ WITH con_dia AS (
   SELECT
     {sku_limpio}                     AS sku_limpio,
     CAST(s.codigo_tienda AS STRING)  AS cod_tienda,
-    {unidades_tiendas}               AS stock_tiendas,
-    {unidades_bodega}                AS stock_bodega,
+    {neto_tiendas}                   AS stock_tiendas,
+    {neto_bodega}                    AS stock_bodega,
     CAST(s.fecha_corte AS STRING)    AS fecha_corte,
     {dia_corte}                      AS dia_corte
   FROM `{table}` AS s
@@ -103,14 +145,21 @@ GROUP BY sku, cod_tienda
 """
 
 
-def build_stock_query(table: str) -> str:
-    """Consulta por defecto, ya formateada para una tabla concreta."""
+def build_stock_query(table: str, columns: Iterable[str] = ()) -> str:
+    """Consulta por defecto, ya formateada para una tabla concreta.
+
+    `columns` son los nombres de columna de la tabla. Con ellos se detectan
+    las de reserva y se descuentan dentro de la consulta, para que
+    `stock_tiendas` y `stock_bodega` lleguen ya netos. Sin `columns` la
+    consulta es la de siempre y no resta nada.
+    """
+    de_tiendas, de_bodega = classify_reserve_columns(columns)
     return STOCK_QUERY.format(
         table=table,
         sku_limpio=SKU_LIMPIO_SQL.format(column="s.id_producto"),
         sku_canonico=SKU_CANONICO_SQL.format(column="sku_limpio"),
-        unidades_tiendas=UNIDADES_SQL.format(column="s.stock_tiendas"),
-        unidades_bodega=UNIDADES_SQL.format(column="s.stock_bodega"),
+        neto_tiendas=_net_sql("s.stock_tiendas", (f"s.{c}" for c in de_tiendas)),
+        neto_bodega=_net_sql("s.stock_bodega", (f"s.{c}" for c in de_bodega)),
         dia_corte=DIA_CORTE_SQL.format(column="s.fecha_corte"),
     )
 
@@ -263,10 +312,13 @@ def keep_latest_cutoff(df: pd.DataFrame) -> tuple[pd.DataFrame, int, str]:
 CENTRAL_FORMULAS = ("sumar", "solo_bodega", "restar_tiendas")
 
 
+DEFAULT_CENTRAL_FORMULA = "solo_bodega"
+
+
 def central_formula(value: Any = None) -> str:
-    """Normaliza el nombre de la formula; lo desconocido cae en `sumar`."""
+    """Normaliza el nombre de la formula; lo desconocido cae en el default."""
     texto = as_text(value).strip().lower().replace(" ", "_").replace("-", "_")
-    return texto if texto in CENTRAL_FORMULAS else "sumar"
+    return texto if texto in CENTRAL_FORMULAS else DEFAULT_CENTRAL_FORMULA
 
 
 def central_warehouse_codes(codes: Iterable[str] | None = None) -> set[str]:
@@ -351,10 +403,26 @@ def _finalize(
         )
     df["sku"] = df["sku"].map(normalize_sku)
     df["cod_tienda"] = df["cod_tienda"].map(normalize_store_code)
+
+    # Reservas que llegaron como columnas propias (archivo de stock, o una
+    # consulta que las devuelve sin descontar). La consulta del repo ya las
+    # resta dentro de BigQuery, asi que ahi no queda ninguna por descontar y
+    # esto no hace nada.
+    reservas_tiendas, reservas_bodega = classify_reserve_columns(df.columns)
+
     for column in ("stock_tiendas", "stock_bodega"):
         if column not in df.columns:
             df[column] = 0
         df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0).astype(int)
+
+    for column, reservas in (
+        ("stock_tiendas", reservas_tiendas),
+        ("stock_bodega", reservas_bodega),
+    ):
+        for reserva in reservas:
+            df[column] = df[column] - pd.to_numeric(
+                df[reserva], errors="coerce"
+            ).fillna(0).astype(int)
     if "fecha_corte" not in df.columns:
         df["fecha_corte"] = ""
     df["fecha_corte"] = df["fecha_corte"].map(as_text)
@@ -417,7 +485,7 @@ class BigQueryStockSource:
     service_account_info: dict[str, Any] | None = None
     include_central_warehouse: bool = True
     central_codes: tuple[str, ...] = ()
-    central_formula: str = "sumar"
+    central_formula: str = DEFAULT_CENTRAL_FORMULA
     custom_query: str = ""
     name: str = "BigQuery"
 
@@ -451,6 +519,19 @@ class BigQueryStockSource:
         except Exception as exc:
             return False, str(exc)
 
+    def table_columns(self) -> list[str]:
+        """Nombres de columna de la tabla de stock. Vacio si no se pueden leer.
+
+        Es una llamada de metadatos, no trae filas. Sirve para descubrir las
+        columnas de reserva sin que nadie tenga que declararlas a mano; si
+        falla (permisos, tabla ausente), la consulta sigue sin restar nada en
+        vez de romperse.
+        """
+        try:
+            return [campo.name for campo in self._client().get_table(self.table).schema]
+        except Exception:
+            return []
+
     def fetch(self, skus: Iterable[str]) -> pd.DataFrame:
         from google.cloud import bigquery
 
@@ -464,7 +545,7 @@ class BigQueryStockSource:
             if "{table}" in query:
                 query = query.format(table=self.table)
         else:
-            query = build_stock_query(self.table)
+            query = build_stock_query(self.table, self.table_columns())
 
         # Una consulta propia puede no filtrar por SKU (por ejemplo, la de
         # Catalogo Control Center, que trae el corte completo). En ese caso se
@@ -562,7 +643,7 @@ class ManualStockSource:
     frame: pd.DataFrame
     include_central_warehouse: bool = True
     central_codes: tuple[str, ...] = ()
-    central_formula: str = "sumar"
+    central_formula: str = DEFAULT_CENTRAL_FORMULA
     name: str = "Archivo de stock"
 
     COLUMN_ALIASES = {
@@ -618,6 +699,13 @@ class ManualStockSource:
                 ),
             }
         )
+
+        # Las columnas de reserva viajan tal cual para que `_finalize` las
+        # descuente. Sin esto quedaban fuera del DataFrame que se le pasa y el
+        # disponible salia sin restar lo reservado.
+        for columna in self.frame.columns:
+            if RESERVE_HINT in as_text(columna).strip().lower():
+                data[columna] = self.frame[columna]
 
         wanted = {normalize_sku(sku) for sku in skus if normalize_sku(sku)}
         data["sku"] = data["sku"].map(normalize_sku)
